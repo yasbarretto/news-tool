@@ -24,7 +24,7 @@ def due_videos():
     with conn() as c:
         return c.execute("""
             SELECT id, video_url, headline, ad_mode, ad_creative_id, ad_slot,
-                   preview_url, preview_key, preview_status
+                   preview_url, preview_key, preview_status, duration
             FROM public.news69_videos
             WHERE (status='publishing')
                OR (status='scheduled' AND publish_at <= now())
@@ -38,14 +38,39 @@ def get_creative(cid):
                          (cid,)).fetchone()
 
 
-def splice_ad(video_url, creative, slot=None):
-    """Re-assemble: [ad spot] + [news video] via JSON2Video. Returns new URL."""
+def _secs(txt, default=110):
+    """'~110s' -> 110"""
+    try:
+        n = int("".join(ch for ch in str(txt) if ch.isdigit()))
+        return n if n > 0 else default
+    except Exception:
+        return default
+
+
+def splice_ad(video_url, creative, slot=None, news_secs=None):
+    """Re-assemble the news video with the ad spot at the chosen slot.
+
+    preroll  : [ad][news]
+    postroll : [news][ad]
+    midroll  : [news first half][ad][news second half]  (uses seek+duration to split)
+    """
     ad_url, dur, default_slot, sponsor = creative
     slot = slot or default_slot or "preroll"
-    scenes = [{"elements": [{"type": "video", "src": ad_url}]},
-              {"elements": [{"type": "video", "src": video_url}]}]
+
+    ad_scene = {"elements": [{"type": "video", "src": ad_url}]}
+    news_scene = {"elements": [{"type": "video", "src": video_url}]}
+
     if slot == "postroll":
-        scenes.reverse()
+        scenes = [news_scene, ad_scene]
+    elif slot == "midroll":
+        total = news_secs or 110
+        half = max(1, round(total / 2))
+        first = {"elements": [{"type": "video", "src": video_url, "seek": 0, "duration": half}]}
+        second = {"elements": [{"type": "video", "src": video_url, "seek": half, "duration": -1}]}
+        scenes = [first, ad_scene, second]
+    else:
+        scenes = [ad_scene, news_scene]
+
     movie = {"resolution": "full-hd", "quality": "high", "scenes": scenes}
     proj = requests.post("https://api.json2video.com/v2/movies", headers=JH, json=movie).json()["project"]
     while True:
@@ -75,13 +100,13 @@ def run_previews():
     would do later — we just do it earlier and reuse the file."""
     with conn() as c:
         rows = c.execute("""
-            SELECT id, video_url, ad_creative_id, ad_slot, preview_key
+            SELECT id, video_url, ad_creative_id, ad_slot, preview_key, duration
             FROM public.news69_videos
             WHERE preview_status = 'queued' AND video_url IS NOT NULL
             ORDER BY id LIMIT 2
         """).fetchall()
 
-    for vid, video_url, cid, slot, key in rows:
+    for vid, video_url, cid, slot, key, dur_txt in rows:
         if not cid:
             with conn() as c:
                 c.execute("UPDATE public.news69_videos SET preview_status='error' WHERE id=%s", (vid,))
@@ -93,7 +118,7 @@ def run_previews():
             cr = get_creative(cid)
             if not cr or not cr[0]:
                 raise RuntimeError("creative has no video file")
-            url = splice_ad(video_url, cr, slot)
+            url = splice_ad(video_url, cr, slot, _secs(dur_txt))
             with conn() as c:
                 c.execute("UPDATE public.news69_videos SET preview_status='ready', preview_url=%s "
                           "WHERE id=%s AND preview_key=%s", (url, vid, key))
@@ -106,7 +131,7 @@ def run_previews():
 
 def run_publishing():
     for (vid, video_url, headline, ad_mode, ad_creative_id, ad_slot,
-         prev_url, prev_key, prev_status) in due_videos():
+         prev_url, prev_key, prev_status, dur_txt) in due_videos():
         print(f"[publish {vid}] {headline} · ads={ad_mode}")
         try:
             final_url = video_url
@@ -119,7 +144,7 @@ def run_publishing():
                 cr = get_creative(ad_creative_id)
                 if cr:
                     print(f"  [publish] splicing {cr[3]} spot ({ad_slot or cr[2]})")
-                    final_url = splice_ad(video_url, cr, ad_slot)
+                    final_url = splice_ad(video_url, cr, ad_slot, _secs(dur_txt))
                     with conn() as c:
                         c.execute("UPDATE public.news69_creatives SET spent = spent + 25 WHERE id=%s", (ad_creative_id,))
 
