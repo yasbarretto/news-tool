@@ -23,7 +23,7 @@ def due_videos():
     """scheduled videos whose time has come, plus anything marked publish-now."""
     with conn() as c:
         return c.execute("""
-            SELECT id, video_url, headline, ad_mode, ad_creative_id
+            SELECT id, video_url, headline, ad_mode, ad_creative_id, ad_slot
             FROM public.news69_videos
             WHERE (status='publishing')
                OR (status='scheduled' AND publish_at <= now())
@@ -37,9 +37,10 @@ def get_creative(cid):
                          (cid,)).fetchone()
 
 
-def splice_ad(video_url, creative):
+def splice_ad(video_url, creative, slot=None):
     """Re-assemble: [ad spot] + [news video] via JSON2Video. Returns new URL."""
-    ad_url, dur, slot, sponsor = creative
+    ad_url, dur, default_slot, sponsor = creative
+    slot = slot or default_slot or "preroll"
     scenes = [{"elements": [{"type": "video", "src": ad_url}]},
               {"elements": [{"type": "video", "src": video_url}]}]
     if slot == "postroll":
@@ -69,15 +70,15 @@ def youtube_upload(video_url, headline):
 
 
 def run_publishing():
-    for vid, video_url, headline, ad_mode, ad_creative_id in due_videos():
+    for vid, video_url, headline, ad_mode, ad_creative_id, ad_slot in due_videos():
         print(f"[publish {vid}] {headline} · ads={ad_mode}")
         try:
             final_url = video_url
             if ad_mode == "inhouse" and ad_creative_id:
                 cr = get_creative(ad_creative_id)
                 if cr:
-                    print(f"  [publish] splicing {cr[3]} spot ({cr[2]})")
-                    final_url = splice_ad(video_url, cr)
+                    print(f"  [publish] splicing {cr[3]} spot ({ad_slot or cr[2]})")
+                    final_url = splice_ad(video_url, cr, ad_slot)
                     with conn() as c:
                         c.execute("UPDATE public.news69_creatives SET spent = spent + 25 WHERE id=%s", (ad_creative_id,))
 
