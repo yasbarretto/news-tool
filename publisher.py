@@ -57,16 +57,18 @@ def splice_ad(video_url, creative, slot=None, news_secs=None):
     ad_url, dur, default_slot, sponsor = creative
     slot = slot or default_slot or "preroll"
 
-    ad_scene = {"elements": [{"type": "video", "src": ad_url}]}
-    news_scene = {"elements": [{"type": "video", "src": video_url}]}
+    # resize:"cover" scales each clip to fill 1920x1080 — without it a 720p ad
+    # renders at native size in the corner with black around it.
+    ad_scene = {"elements": [{"type": "video", "src": ad_url, "resize": "cover"}]}
+    news_scene = {"elements": [{"type": "video", "src": video_url, "resize": "cover"}]}
 
     if slot == "postroll":
         scenes = [news_scene, ad_scene]
     elif slot == "midroll":
         total = news_secs or 110
         half = max(1, round(total / 2))
-        first = {"elements": [{"type": "video", "src": video_url, "seek": 0, "duration": half}]}
-        second = {"elements": [{"type": "video", "src": video_url, "seek": half, "duration": -1}]}
+        first = {"elements": [{"type": "video", "src": video_url, "resize": "cover", "seek": 0, "duration": half}]}
+        second = {"elements": [{"type": "video", "src": video_url, "resize": "cover", "seek": half, "duration": -1}]}
         scenes = [first, ad_scene, second]
     else:
         scenes = [ad_scene, news_scene]
