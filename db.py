@@ -61,3 +61,14 @@ def count_today():
     with get_conn() as c:
         return c.execute("SELECT count(*) FROM public.news69_videos "
                          "WHERE created_at::date = (now() at time zone 'utc')::date").fetchone()[0]
+
+
+def recent_headlines(limit=25):
+    """Headlines we've already covered — used to avoid duplicate stories."""
+    with get_conn() as c:
+        rows = c.execute(
+            "SELECT headline FROM public.news69_videos "
+            "WHERE headline IS NOT NULL AND created_at > now() - interval '3 days' "
+            "ORDER BY created_at DESC LIMIT %s", (limit,)
+        ).fetchall()
+    return [r[0] for r in rows]

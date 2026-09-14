@@ -54,14 +54,17 @@ def ingest(limit=15):
     return []
 
 
-def make_script(headlines, n):
+def make_script(headlines, n, covered=None):
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
     prompt = f"""You are a news producer for a short tech-news video hosted by an AI anchor named Annie.
 
 Today's candidate headlines:
 {json.dumps(headlines, indent=2)}
 
-Pick the {n} MOST newsworthy tech stories. Return ONLY valid JSON (no markdown) in exactly this shape:
+ALREADY COVERED — do NOT pick these stories again (we have published them recently):
+{json.dumps(covered or [], indent=2)}
+
+Pick the {n} MOST newsworthy tech stories that are NOT already covered above. Return ONLY valid JSON (no markdown) in exactly this shape:
 {{
   "intro": "<Annie's spoken opening: one sentence teasing the {n} stories by name>",
   "stories": [
@@ -75,7 +78,7 @@ Pick the {n} MOST newsworthy tech stories. Return ONLY valid JSON (no markdown) 
 }}
 
 Rules:
-- Exactly {n} stories.
+- Exactly {n} stories, all genuinely different from each other AND from the already-covered list. If a story is the same event as a covered one, skip it and choose another.
 - broll_prompts: give ONE image prompt per roughly 4-5 seconds of narration (so a short story gets 1-2, a longer one 3-4).
 - Each broll_prompt must SPECIFICALLY depict THIS story's subject — the actual technology, product, company setting, place, or concept discussed (e.g. a rocket on a launch pad for a SpaceX story; rows of servers for a data-center story; a smartphone showing an app for a software story). Make them vivid, photorealistic, editorial.
 - Anonymous, unnamed people ARE encouraged for a real-news feel — e.g. "a software engineer at a terminal", "a crowd of commuters looking at phones", "hands typing on a laptop", "analysts on a trading floor". Depict them generically.

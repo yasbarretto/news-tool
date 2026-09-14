@@ -36,7 +36,8 @@ def process(job_id, num_stories):
             return
 
         stage("writing script", 25)
-        script = make_script(headlines, num_stories)
+        covered = db.recent_headlines()
+        script = make_script(headlines, num_stories, covered)
 
         stage("rendering anchor", 45)
         intro_url = heygen_avatar(script["intro"])
