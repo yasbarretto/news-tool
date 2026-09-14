@@ -94,6 +94,25 @@ Rules:
     return script
 
 
+def revise_script(script, note):
+    """Apply a reviewer's rejection note to an existing script."""
+    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    prompt = f"""A reviewer rejected this news video script. Fix it according to their note.
+
+CURRENT SCRIPT:
+{json.dumps(script, indent=2)}
+
+REVIEWER'S NOTE (this is what must be fixed):
+{note}
+
+Return ONLY the corrected script as valid JSON in the SAME shape (intro, stories[headline,narration,broll_prompts], outro).
+Change only what the note asks for; leave everything else intact. Keep numbers spelled out for speech."""
+    msg = client.messages.create(model="claude-sonnet-4-6", max_tokens=2500,
+                                 messages=[{"role": "user", "content": prompt}])
+    text = "".join(b.text for b in msg.content if b.type == "text")
+    return json.loads(text[text.find("{"):text.rfind("}") + 1])
+
+
 def heygen_avatar(text):
     payload = {"video_inputs": [{
         "character": {"type": "avatar", "avatar_id": AVATAR_ID, "avatar_style": "normal"},

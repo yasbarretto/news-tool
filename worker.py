@@ -17,7 +17,7 @@ import db
 from qa import run_auto_qa
 from publisher import run_publishing
 from phase3_pipeline import (
-    ingest, make_script, heygen_avatar, heygen_tts, story_scene, build_movie, render_movie,
+    ingest, make_script, revise_script, heygen_avatar, heygen_tts, story_scene, build_movie, render_movie,
 )
 
 POLL_SECONDS = 15
@@ -29,15 +29,35 @@ def process(job_id, num_stories):
         print(f"[job {job_id}] {label} ({pct}%)")
 
     try:
-        stage("ingesting news", 10)
-        headlines = ingest()
-        if not headlines:
-            db.update_job(job_id, status="failed", stage="error", error="no headlines from any feed")
-            return
+        job = db.get_job(job_id)
+        headlines = []
 
-        stage("writing script", 25)
-        covered = db.recent_headlines()
-        script = make_script(headlines, num_stories, covered)
+        if job.get("script"):
+            # ---- REWORK: re-render from the stored script, no new story ----
+            script = job["script"]
+            note = job.get("reject_note")
+            cat = job.get("reject_category")
+            if job.get("rework_mode") == "auto" and note and cat in ("script", "audio", "fact"):
+                stage("revising script from note", 20)
+                try:
+                    script = revise_script(script, note)
+                except Exception as e:
+                    print("  [rework] revise failed, using original script:", e)
+            else:
+                stage("reusing script", 20)
+            db.save_script(job_id, script)
+        else:
+            # ---- FRESH: pick a new story ----
+            stage("ingesting news", 10)
+            headlines = ingest()
+            if not headlines:
+                db.update_job(job_id, status="failed", stage="error", error="no headlines from any feed")
+                return
+
+            stage("writing script", 25)
+            covered = db.recent_headlines()
+            script = make_script(headlines, num_stories, covered)
+            db.save_script(job_id, script)
 
         stage("rendering anchor", 45)
         intro_url = heygen_avatar(script["intro"])
@@ -50,7 +70,7 @@ def process(job_id, num_stories):
         url = render_movie(build_movie(intro_url, outro_url, story_scenes))
 
         stage("auto-QA", 95)
-        qa = run_auto_qa(script, headlines)
+        qa = run_auto_qa(script, headlines or [])
         head = script["stories"][0]["headline"]
         flags = [k for k in ("facts", "visual", "brand", "audio") if qa.get(k) == "warn"]
         db.log_event("qa", job_id, head,
