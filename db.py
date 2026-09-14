@@ -90,13 +90,13 @@ def get_job(vid):
     """Job row details needed to decide fresh-generate vs rework."""
     with get_conn() as c:
         r = c.execute(
-            "SELECT script, reject_note, reject_category, rework_of, rework_mode "
+            "SELECT script, reject_note, reject_category, rework_of, rework_mode, avatar_id "
             "FROM public.news69_videos WHERE id=%s", (vid,)
         ).fetchone()
     if not r:
         return {}
     return {"script": r[0], "reject_note": r[1], "reject_category": r[2],
-            "rework_of": r[3], "rework_mode": r[4]}
+            "rework_of": r[3], "rework_mode": r[4], "avatar_id": r[5]}
 
 
 def save_script(vid, script):

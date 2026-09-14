@@ -60,8 +60,9 @@ def process(job_id, num_stories):
             db.save_script(job_id, script)
 
         stage("rendering anchor", 45)
-        intro_url = heygen_avatar(script["intro"])
-        outro_url = heygen_avatar(script["outro"])
+        av = job.get("avatar_id")
+        intro_url = heygen_avatar(script["intro"], av)
+        outro_url = heygen_avatar(script["outro"], av)
         # ~2.5 words/sec speech -> avatar seconds actually rendered
         avatar_words = len(str(script["intro"]).split()) + len(str(script["outro"]).split())
         avatar_secs = avatar_words / 2.5

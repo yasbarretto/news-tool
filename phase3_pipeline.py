@@ -44,7 +44,8 @@ def ingest(limit=15):
     for url in FEED_URLS:
         try:
             resp = requests.get(url, headers=UA, timeout=20)
-            items = [{"title": e.title, "summary": getattr(e, "summary", "")[:300]}
+            items = [{"title": e.title, "summary": getattr(e, "summary", "")[:300],
+                      "link": getattr(e, "link", "")}
                      for e in feedparser.parse(resp.content).entries[:limit]]
             if items:
                 print(f"[ingest] {len(items)} headlines from {url.split('?')[0]}")
@@ -71,6 +72,8 @@ Pick the {n} MOST newsworthy tech stories that are NOT already covered above. Re
     {{
       "headline": "<SHORT on-screen headline, Title Case, max 6 words>",
       "narration": "<1-3 sentences Annie speaks for this story>",
+      "source_title": "<the EXACT headline from the candidate list this story came from>",
+      "source_link": "<that item's link, copied exactly>",
       "broll_prompts": ["<photorealistic editorial news image>", "..."]
     }}
   ],
@@ -78,6 +81,7 @@ Pick the {n} MOST newsworthy tech stories that are NOT already covered above. Re
 }}
 
 Rules:
+- source_title and source_link MUST be copied verbatim from the candidate item you used, so a reviewer can verify the claims.
 - Exactly {n} stories, all genuinely different from each other AND from the already-covered list. If a story is the same event as a covered one, skip it and choose another.
 - broll_prompts: give ONE image prompt per roughly 4-5 seconds of narration (so a short story gets 1-2, a longer one 3-4).
 - Each broll_prompt must SPECIFICALLY depict THIS story's subject — the actual technology, product, company setting, place, or concept discussed (e.g. a rocket on a launch pad for a SpaceX story; rows of servers for a data-center story; a smartphone showing an app for a software story). Make them vivid, photorealistic, editorial.
@@ -133,9 +137,9 @@ Change only what the note asks for; leave everything else intact. Keep numbers s
     return json.loads(text[text.find("{"):text.rfind("}") + 1])
 
 
-def heygen_avatar(text):
+def heygen_avatar(text, avatar_id=None):
     payload = {"video_inputs": [{
-        "character": {"type": "avatar", "avatar_id": AVATAR_ID, "avatar_style": "normal"},
+        "character": {"type": "avatar", "avatar_id": avatar_id or AVATAR_ID, "avatar_style": "normal"},
         "voice": {"type": "text", "input_text": text, "voice_id": VOICE_ID}}],
         "aspect_ratio": "16:9", "test": TEST}
     resp = requests.post("https://api.heygen.com/v2/video/generate", headers=HH, json=payload)
