@@ -137,10 +137,10 @@ Change only what the note asks for; leave everything else intact. Keep numbers s
     return json.loads(text[text.find("{"):text.rfind("}") + 1])
 
 
-def heygen_avatar(text, avatar_id=None):
+def heygen_avatar(text, avatar_id=None, voice_id=None):
     payload = {"video_inputs": [{
         "character": {"type": "avatar", "avatar_id": avatar_id or AVATAR_ID, "avatar_style": "normal"},
-        "voice": {"type": "text", "input_text": text, "voice_id": VOICE_ID}}],
+        "voice": {"type": "text", "input_text": text, "voice_id": voice_id or VOICE_ID}}],
         "aspect_ratio": "16:9", "test": TEST}
     resp = requests.post("https://api.heygen.com/v2/video/generate", headers=HH, json=payload)
     body = resp.json()
@@ -156,9 +156,9 @@ def heygen_avatar(text, avatar_id=None):
             raise RuntimeError(d)
 
 
-def heygen_tts(text):
+def heygen_tts(text, voice_id=None):
     r = requests.post("https://api.heygen.com/v3/voices/speech", headers=HH,
-                      json={"text": text, "voice_id": VOICE_ID}).json()
+                      json={"text": text, "voice_id": voice_id or VOICE_ID}).json()
     d = r.get("data", {})
     if not d.get("audio_url"):
         raise RuntimeError(r)
@@ -192,11 +192,11 @@ def render_movie(movie, max_retries=3):
     raise RuntimeError("render failed after retries")
 
 
-def story_scene(story):
+def story_scene(story, voice_id=None):
     """One story: multiple b-roll images cycling under the narration, with a lower-third headline.
     LEAD/TAIL add silence so voices don't overlap across the slide transitions."""
     LEAD, TAIL = 0.4, 0.5
-    audio_url, dur = heygen_tts(story["narration"])
+    audio_url, dur = heygen_tts(story["narration"], voice_id)
     prompts = story.get("broll_prompts") or [story.get("broll_prompt", "")]
     n = max(1, len(prompts))
     scene_dur = round(LEAD + dur + TAIL, 2)

@@ -60,15 +60,15 @@ def process(job_id, num_stories):
             db.save_script(job_id, script)
 
         stage("rendering anchor", 45)
-        av = job.get("avatar_id")
-        intro_url = heygen_avatar(script["intro"], av)
-        outro_url = heygen_avatar(script["outro"], av)
+        av = job.get("avatar_id"); vo = job.get("voice_id")
+        intro_url = heygen_avatar(script["intro"], av, vo)
+        outro_url = heygen_avatar(script["outro"], av, vo)
         # ~2.5 words/sec speech -> avatar seconds actually rendered
         avatar_words = len(str(script["intro"]).split()) + len(str(script["outro"]).split())
         avatar_secs = avatar_words / 2.5
 
         stage("narration + b-roll", 60)
-        story_scenes = [story_scene(s) for s in script["stories"]]
+        story_scenes = [story_scene(s, vo) for s in script["stories"]]
         narration_secs = sum(sc.get("duration", 0) for sc in story_scenes)
         n_images = sum(len(st.get("broll_prompts") or [1]) for st in script["stories"])
 
