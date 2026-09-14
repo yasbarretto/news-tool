@@ -23,7 +23,8 @@ def due_videos():
     """scheduled videos whose time has come, plus anything marked publish-now."""
     with conn() as c:
         return c.execute("""
-            SELECT id, video_url, headline, ad_mode, ad_creative_id, ad_slot
+            SELECT id, video_url, headline, ad_mode, ad_creative_id, ad_slot,
+                   preview_url, preview_key, preview_status
             FROM public.news69_videos
             WHERE (status='publishing')
                OR (status='scheduled' AND publish_at <= now())
@@ -69,12 +70,52 @@ def youtube_upload(video_url, headline):
     raise NotImplementedError("YouTube upload not wired yet — set MOCK_PUBLISH=true")
 
 
+def run_previews():
+    """Build real spliced previews the reviewer asked for. Same render publishing
+    would do later — we just do it earlier and reuse the file."""
+    with conn() as c:
+        rows = c.execute("""
+            SELECT id, video_url, ad_creative_id, ad_slot, preview_key
+            FROM public.news69_videos
+            WHERE preview_status = 'queued' AND video_url IS NOT NULL
+            ORDER BY id LIMIT 2
+        """).fetchall()
+
+    for vid, video_url, cid, slot, key in rows:
+        if not cid:
+            with conn() as c:
+                c.execute("UPDATE public.news69_videos SET preview_status='error' WHERE id=%s", (vid,))
+            continue
+        print(f"[preview {vid}] building spliced preview ({slot})")
+        with conn() as c:
+            c.execute("UPDATE public.news69_videos SET preview_status='building' WHERE id=%s", (vid,))
+        try:
+            cr = get_creative(cid)
+            if not cr or not cr[0]:
+                raise RuntimeError("creative has no video file")
+            url = splice_ad(video_url, cr, slot)
+            with conn() as c:
+                c.execute("UPDATE public.news69_videos SET preview_status='ready', preview_url=%s "
+                          "WHERE id=%s AND preview_key=%s", (url, vid, key))
+            print(f"[preview {vid}] ready")
+        except Exception as e:
+            print(f"[preview {vid}] FAILED: {e}")
+            with conn() as c:
+                c.execute("UPDATE public.news69_videos SET preview_status='error' WHERE id=%s", (vid,))
+
+
 def run_publishing():
-    for vid, video_url, headline, ad_mode, ad_creative_id, ad_slot in due_videos():
+    for (vid, video_url, headline, ad_mode, ad_creative_id, ad_slot,
+         prev_url, prev_key, prev_status) in due_videos():
         print(f"[publish {vid}] {headline} · ads={ad_mode}")
         try:
             final_url = video_url
-            if ad_mode == "inhouse" and ad_creative_id:
+            want_key = f"{ad_creative_id}:{ad_slot}"
+            if ad_mode == "inhouse" and prev_url and prev_status == "ready" and prev_key == want_key:
+                # the reviewer already built this exact splice — reuse it, no second render
+                print("  [publish] reusing the approved preview render")
+                final_url = prev_url
+            elif ad_mode == "inhouse" and ad_creative_id:
                 cr = get_creative(ad_creative_id)
                 if cr:
                     print(f"  [publish] splicing {cr[3]} spot ({ad_slot or cr[2]})")

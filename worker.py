@@ -15,7 +15,7 @@ from datetime import datetime, timezone, timedelta
 
 import db
 from qa import run_auto_qa
-from publisher import run_publishing
+from publisher import run_publishing, run_previews
 from phase3_pipeline import (
     ingest, make_script, revise_script, heygen_avatar, heygen_tts, story_scene, build_movie, render_movie, estimate_cost,
 )
@@ -124,6 +124,7 @@ def main():
     while True:
         try:
             settings = db.get_settings()
+            run_previews()            # build any spliced previews the reviewer asked for
             run_publishing()          # ship anything whose publish time has arrived
             maybe_enqueue(settings)
             job_id = db.claim_next_queued()
