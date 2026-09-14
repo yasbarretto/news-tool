@@ -137,11 +137,30 @@ Change only what the note asks for; leave everything else intact. Keep numbers s
     return json.loads(text[text.find("{"):text.rfind("}") + 1])
 
 
+# One shared background so every presenter looks like the same studio.
+# STUDIO_BG can be a hex colour ("#101820") or a public image URL.
+# NOTE: only applies to avatars that support background replacement — ones with a
+# baked-in scene keep their own background and HeyGen ignores this.
+STUDIO_BG = os.environ.get("STUDIO_BG", "")
+
+
+def _bg():
+    if not STUDIO_BG:
+        return None
+    if STUDIO_BG.startswith("http"):
+        return {"type": "image", "url": STUDIO_BG}
+    return {"type": "color", "value": STUDIO_BG}
+
+
 def heygen_avatar(text, avatar_id=None, voice_id=None):
-    payload = {"video_inputs": [{
+    scene = {
         "character": {"type": "avatar", "avatar_id": avatar_id or AVATAR_ID, "avatar_style": "normal"},
-        "voice": {"type": "text", "input_text": text, "voice_id": voice_id or VOICE_ID}}],
-        "aspect_ratio": "16:9", "test": TEST}
+        "voice": {"type": "text", "input_text": text, "voice_id": voice_id or VOICE_ID},
+    }
+    bg = _bg()
+    if bg:
+        scene["background"] = bg
+    payload = {"video_inputs": [scene], "aspect_ratio": "16:9", "test": TEST}
     resp = requests.post("https://api.heygen.com/v2/video/generate", headers=HH, json=payload)
     body = resp.json()
     if not body.get("data") or not body["data"].get("video_id"):
@@ -233,7 +252,17 @@ def build_movie(intro_url, outro_url, story_scenes):
                   + [{"comment": "outro", "transition": {"style": "slideleft", "duration": 0.5},
                       "elements": [{"type": "video", "src": outro_url}]}],
         "elements": [{"type": "subtitles", "language": "auto",
-                      "settings": {"style": "classic", "max-words-per-line": 4, "position": "bottom-center"}}],
+                      "settings": {
+                          "style": "classic",
+                          "max-words-per-line": 4,
+                          "position": "bottom-center",
+                          "line-color": "#FFFFFF",
+                          "word-color": "#FFD34D",      # highlighted spoken word
+                          "outline-color": "#000000",   # hard edge — the real legibility win
+                          "outline-width": 5,
+                          "shadow-color": "#000000",    # soft drop shadow under that
+                          "shadow-offset": 4,
+                      }}],
     }
 
 
