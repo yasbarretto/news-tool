@@ -17,7 +17,7 @@ import db
 from qa import run_auto_qa
 from publisher import run_publishing
 from phase3_pipeline import (
-    ingest, make_script, revise_script, heygen_avatar, heygen_tts, story_scene, build_movie, render_movie,
+    ingest, make_script, revise_script, heygen_avatar, heygen_tts, story_scene, build_movie, render_movie, estimate_cost,
 )
 
 POLL_SECONDS = 15
@@ -62,9 +62,14 @@ def process(job_id, num_stories):
         stage("rendering anchor", 45)
         intro_url = heygen_avatar(script["intro"])
         outro_url = heygen_avatar(script["outro"])
+        # ~2.5 words/sec speech -> avatar seconds actually rendered
+        avatar_words = len(str(script["intro"]).split()) + len(str(script["outro"]).split())
+        avatar_secs = avatar_words / 2.5
 
         stage("narration + b-roll", 60)
         story_scenes = [story_scene(s) for s in script["stories"]]
+        narration_secs = sum(sc.get("duration", 0) for sc in story_scenes)
+        n_images = sum(len(st.get("broll_prompts") or [1]) for st in script["stories"])
 
         stage("assembling video", 80)
         url = render_movie(build_movie(intro_url, outro_url, story_scenes))
@@ -76,8 +81,11 @@ def process(job_id, num_stories):
         db.log_event("qa", job_id, head,
                      (f"{len(flags)} flag(s): " + ", ".join(flags)) if flags else "all checks passed")
 
+        total_secs = avatar_secs + narration_secs
+        cost = estimate_cost(script, avatar_secs, narration_secs, n_images, total_secs,
+                             fresh=not job.get("script"))
         db.update_job(
-            job_id, status="review", stage="ready", progress=100,
+            job_id, status="review", stage="ready", progress=100, cost=cost,
             headline=script["stories"][0]["headline"], video_url=url, qa=qa,
             duration=f"~{num_stories * 30 + 20}s",
         )

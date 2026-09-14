@@ -94,6 +94,26 @@ Rules:
     return script
 
 
+# --- unit prices (update here if vendor pricing changes) ---
+PRICE = {
+    "avatar_per_min": 1.00,    # HeyGen Avatar III
+    "tts_per_min":    0.04,    # HeyGen TTS
+    "image_each":     0.04,    # flux-pro via JSON2Video
+    "render_per_sec": 0.0069,  # JSON2Video ($49.95 / 7200 credits)
+    "llm_flat":       0.12,    # Claude: triage + script + auto-QA
+}
+
+
+def estimate_cost(script, avatar_secs, narration_secs, n_images, total_secs, fresh=True):
+    """Estimate what this video actually cost, from what was really generated."""
+    c = (avatar_secs / 60.0) * PRICE["avatar_per_min"]
+    c += (narration_secs / 60.0) * PRICE["tts_per_min"]
+    c += n_images * PRICE["image_each"]
+    c += total_secs * PRICE["render_per_sec"]
+    c += PRICE["llm_flat"] if fresh else PRICE["llm_flat"] * 0.4   # rework skips ingest+scripting
+    return round(c, 4)
+
+
 def revise_script(script, note):
     """Apply a reviewer's rejection note to an existing script."""
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
