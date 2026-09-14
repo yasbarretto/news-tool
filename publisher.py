@@ -87,6 +87,9 @@ def run_publishing():
                 c.execute("""UPDATE public.news69_videos
                              SET status='published', published_at=now(), youtube_id=%s, video_url=%s
                              WHERE id=%s""", (yt, final_url, vid))
+            with conn() as c:
+                c.execute("INSERT INTO public.news69_events (kind,video_id,headline,detail) VALUES ('published',%s,%s,%s)",
+                          (vid, headline, ("in-house ad" if ad_mode == "inhouse" else "platform ads")))
             print(f"[publish {vid}] PUBLISHED")
         except Exception as e:
             print(f"[publish {vid}] FAILED: {e}")

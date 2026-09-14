@@ -72,3 +72,15 @@ def recent_headlines(limit=25):
             "ORDER BY created_at DESC LIMIT %s", (limit,)
         ).fetchall()
     return [r[0] for r in rows]
+
+
+def log_event(kind, video_id=None, headline=None, detail=None):
+    """Write an entry to the dashboard activity feed. Never blocks the pipeline."""
+    try:
+        with get_conn() as c:
+            c.execute(
+                "INSERT INTO public.news69_events (kind, video_id, headline, detail) VALUES (%s,%s,%s,%s)",
+                (kind, video_id, headline, detail),
+            )
+    except Exception as e:
+        print("[events] log failed:", e)

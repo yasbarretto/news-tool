@@ -51,16 +51,22 @@ def process(job_id, num_stories):
 
         stage("auto-QA", 95)
         qa = run_auto_qa(script, headlines)
+        head = script["stories"][0]["headline"]
+        flags = [k for k in ("facts", "visual", "brand", "audio") if qa.get(k) == "warn"]
+        db.log_event("qa", job_id, head,
+                     (f"{len(flags)} flag(s): " + ", ".join(flags)) if flags else "all checks passed")
 
         db.update_job(
             job_id, status="review", stage="ready", progress=100,
             headline=script["stories"][0]["headline"], video_url=url, qa=qa,
             duration=f"~{num_stories * 30 + 20}s",
         )
+        db.log_event("generated", job_id, head, "entered review queue")
         print(f"[job {job_id}] DONE -> in review queue")
     except Exception as e:
         traceback.print_exc()
         db.update_job(job_id, status="failed", stage="error", error=str(e)[:500])
+        db.log_event("rejected", job_id, None, "generation failed: " + str(e)[:80])
 
 
 def maybe_enqueue(s):
