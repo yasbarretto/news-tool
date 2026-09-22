@@ -18,11 +18,14 @@ from qa import run_auto_qa
 from publisher import run_publishing, run_previews
 from shows import get_show
 import coanchor
+from phase3_pipeline import WaitTimeout
 from phase3_pipeline import (
     ingest, make_script, revise_script, heygen_avatar, heygen_tts, story_scene, build_movie, render_movie, estimate_cost,
 )
 
 POLL_SECONDS = 15
+# A slow clip requeues the job (resuming its clips) up to this many times before failing.
+JOB_RETRIES = int(os.environ.get("JOB_RETRIES", "3"))
 
 
 def process(job_id, num_stories):
@@ -46,7 +49,8 @@ def _rework_script(job, stage):
     if job.get("rework_mode") == "auto" and note and cat in ("script", "audio", "fact"):
         stage("revising script from note", 20)
         try:
-            script = revise_script(script, note)
+            private = {k: v for k, v in script.items() if str(k).startswith("_")}
+            script = {**revise_script(coanchor.public(script), note), **private}
         except Exception as e:
             print("  [rework] revise failed, using original script:", e)
     else:
@@ -55,7 +59,7 @@ def _rework_script(job, stage):
 
 
 def _finish(job_id, script, headlines, url, cost, secs, show_title=None):
-    qa = run_auto_qa(script, headlines or [])
+    qa = run_auto_qa(coanchor.public(script), headlines or [])
     head = script["stories"][0]["headline"]
     flags = [k for k in ("facts", "visual", "brand", "audio") if qa.get(k) == "warn"]
     db.log_event("qa", job_id, head,
@@ -83,6 +87,8 @@ def process_show(job_id, job, show, num_stories):
                 return
             stage("writing co-anchor script", 22)
             script = coanchor.make_coanchor_script(headlines, show, num_stories, db.recent_headlines())
+            script["_headlines"] = headlines          # a requeued attempt still has them (ticker, QA)
+        headlines = headlines or script.get("_headlines", [])
         db.save_script(job_id, script)
         ticker_items = [h["title"] for h in headlines] or [s["headline"] for s in script["stories"]]
         coanchor.preflight_movie(script, show, ticker_items)   # validate the payload before spending
@@ -91,7 +97,20 @@ def process_show(job_id, job, show, num_stories):
         narration = coanchor.voice_narration(script, show)   # cheap; fails fast on a bad voice
 
         stage("rendering anchors", 42)
-        clips = coanchor.render_clips(script, show)
+        ledger = script.setdefault("_clips", {})
+        try:
+            clips = coanchor.render_clips(script, show, ledger, save=lambda: db.save_script(job_id, script))
+        except WaitTimeout as e:
+            tries = script.setdefault("_retries", {})
+            n = tries.get(str(job_id), 0)
+            if n < JOB_RETRIES:
+                tries[str(job_id)] = n + 1
+                db.save_script(job_id, script)
+                db.update_job(job_id, status="queued", stage=f"requeued · waiting on HeyGen ({n + 1}/{JOB_RETRIES})",
+                              progress=42, error=str(e)[:300])
+                print(f"[job {job_id}] slow clip, requeued ({n + 1}/{JOB_RETRIES}); finished and running clips will be resumed")
+                return
+            raise
         avatar_secs = coanchor.spoken_words(script) / coanchor.WPS
 
         stage("building graphics + b-roll", 64)

@@ -194,7 +194,27 @@ def wait_for(label, poll, is_done, is_failed, timeout, every=8, abort=None):
     raise WaitTimeout(f"{label} timed out after {timeout // 60} min (last status: {last})")
 
 
-def heygen_avatar(text, avatar_id=None, voice_id=None, photo_id=None, label="heygen", abort=None):
+def _heygen_await(vid, label, abort=None):
+    d = wait_for(
+        label,
+        lambda: requests.get(f"https://api.heygen.com/v1/video_status.get?video_id={vid}",
+                             headers=HH, timeout=NET).json().get("data"),
+        lambda d: d.get("status") == "completed" and d.get("video_url"),
+        lambda d: d.get("status") in ("failed", "error"),   # real failure
+        HEYGEN_TIMEOUT, abort=abort)
+    return d["video_url"]   # status calls return a FRESH presigned url, so resuming never serves an expired one
+
+
+def heygen_avatar(text, avatar_id=None, voice_id=None, photo_id=None, label="heygen", abort=None,
+                  resume_vid=None, on_submit=None):
+    """Render one avatar clip.
+
+    resume_vid: a clip already submitted (and paid for) by an earlier attempt of this job.
+                We pick it back up instead of submitting a duplicate.
+    on_submit:  called with the new video id the moment it's submitted, so the job can
+                record it before waiting. With it, a slow clip is never resubmitted here;
+                the job requeues and resumes it instead.
+    """
     # photo_id = a generated photo-avatar look (talking_photo); otherwise a stock avatar
     character = ({"type": "talking_photo", "talking_photo_id": photo_id} if photo_id else
                  {"type": "avatar", "avatar_id": avatar_id or AVATAR_ID, "avatar_style": "normal"})
@@ -206,7 +226,18 @@ def heygen_avatar(text, avatar_id=None, voice_id=None, photo_id=None, label="hey
     if bg:
         scene["background"] = bg
     payload = {"video_inputs": [scene], "aspect_ratio": "16:9", "test": TEST}
-    for attempt in range(1, HEYGEN_ATTEMPTS + 1):
+
+    if resume_vid:
+        print(f"  [{label}] resuming {resume_vid}")
+        try:
+            return _heygen_await(resume_vid, label, abort)
+        except (WaitTimeout, Aborted):
+            raise                                   # still running: the job requeues and resumes again
+        except RuntimeError as e:
+            print(f"  [{label}] earlier submission failed, submitting fresh: {str(e)[:120]}")
+
+    attempts = 1 if on_submit else HEYGEN_ATTEMPTS
+    for attempt in range(1, attempts + 1):
         if abort is not None and abort.is_set():  # never submit (and pay) for a lost job
             raise Aborted(f"{label} not submitted: job already failed")
         resp = requests.post("https://api.heygen.com/v2/video/generate", headers=HH, json=payload, timeout=NET)
@@ -217,18 +248,13 @@ def heygen_avatar(text, avatar_id=None, voice_id=None, photo_id=None, label="hey
             raise RuntimeError(f"[heygen error] HTTP {resp.status_code}: {json.dumps(body)[:600]}")
         vid = body["data"]["video_id"]
         print(f"  [{label}] submitted {vid}" + (f" (attempt {attempt})" if attempt > 1 else ""))
+        if on_submit:
+            on_submit(vid)
         try:
-            d = wait_for(
-                label,
-                lambda: requests.get(f"https://api.heygen.com/v1/video_status.get?video_id={vid}",
-                                     headers=HH, timeout=NET).json().get("data"),
-                lambda d: d.get("status") == "completed" and d.get("video_url"),
-                lambda d: d.get("status") in ("failed", "error"),   # real failure: no retry
-                HEYGEN_TIMEOUT, abort=abort)
-            return d["video_url"]
+            return _heygen_await(vid, label, abort)
         except WaitTimeout as e:
-            if attempt == HEYGEN_ATTEMPTS:
-                raise WaitTimeout(f"{e} · gave up after {attempt} attempts")
+            if attempt == attempts:
+                raise WaitTimeout(f"{e} · gave up after {attempt} attempt{'s' if attempt > 1 else ''}")
             print(f"  [{label}] stuck at HeyGen, resubmitting")
 
 

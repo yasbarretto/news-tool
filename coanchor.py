@@ -15,7 +15,7 @@ Running order
 Stories alternate A, B, A... regardless of what the model returns.
 """
 import os, json
-import threading
+import threading, hashlib, time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import anthropic
@@ -24,6 +24,8 @@ import graphics as g
 from phase3_pipeline import ANTHROPIC_API_KEY, heygen_avatar, heygen_tts, Aborted
 
 CONCURRENCY = int(os.environ.get("HEYGEN_CONCURRENCY", "3"))
+# A recorded clip older than this is presumed dead at HeyGen and submitted fresh.
+RESUME_MAX_MIN = int(os.environ.get("RESUME_MAX_MIN", "45"))
 DISSOLVE = float(os.environ.get("DISSOLVE_SEC", "0.3"))  # crossfade between scenes; 0 = hard cuts
 CAPTIONS = os.environ.get("CAPTIONS", "off").lower() in ("on", "1", "true")  # broadcast has no burned-in captions
 CAPTION_POS = os.environ.get("CAPTION_POS", "custom")   # set to mid-bottom-center to fall back
@@ -135,22 +137,58 @@ def _lines(script):
     return [x for x in out if (x[2] or "").strip()]
 
 
-def render_clips(script, show):
+def public(script):
+    """The script without our bookkeeping keys (_clips, _retries, _headlines),
+    for anything that sends it to a model."""
+    return {k: v for k, v in script.items() if not str(k).startswith("_")}
+
+
+def _sig(text, anc):
+    """Identity of a clip: same words, same face, same voice = same clip."""
+    raw = "|".join([str(text), str(anc.get("avatar")), str(anc.get("photo")), str(anc.get("voice"))])
+    return hashlib.sha1(raw.encode()).hexdigest()[:16]
+
+
+def render_clips(script, show, ledger=None, save=None):
     """Render all on-camera lines in parallel. Returns {key: video_url}.
 
-    Fails fast: as soon as one clip gives up, clips not yet submitted are cancelled
-    (never paid for) and in-flight waits stop, instead of finishing an episode that's
-    already lost."""
+    ledger (dict, persisted with the job via save()) records every clip's HeyGen video id
+    the moment it's submitted. On a retry of the same job:
+      - a clip whose words/face/voice are unchanged is RESUMED by its id: finished clips
+        come straight back, running ones keep going. Nothing is paid for twice.
+      - anything changed, never submitted, or older than RESUME_MAX_MIN is submitted fresh.
+
+    Fails fast: as soon as one clip gives up, clips not yet submitted are cancelled and
+    in-flight waits stop. Their ids are already in the ledger, so the next attempt resumes them.
+    """
     lines = _lines(script)
+    ledger = ledger if ledger is not None else {}
+    lock = threading.Lock()
     abort = threading.Event()
+
+    def record(key, **fields):
+        with lock:
+            ledger.setdefault(key, {}).update(fields)
+            if save:
+                save()
 
     def one(item):
         key, who, text = item
         if abort.is_set():                  # job already lost: don't submit (don't pay)
             raise Aborted(f"clip {key} skipped: job already failed")
         anc = show[who]
-        return key, heygen_avatar(text, anc["avatar"], anc["voice"], anc.get("photo"),
-                                  label=f"clip {key} · {anc['name']}", abort=abort)
+        sig = _sig(text, anc)
+        prev = ledger.get(key) or {}
+        fresh_enough = (time.time() - prev.get("at", 0)) < RESUME_MAX_MIN * 60
+        resume = prev.get("vid") if prev.get("sig") == sig and (prev.get("done") or fresh_enough) else None
+
+        def on_submit(vid):
+            record(key, sig=sig, vid=vid, at=time.time(), done=False)
+
+        url = heygen_avatar(text, anc["avatar"], anc["voice"], anc.get("photo"),
+                            label=f"clip {key} · {anc['name']}", abort=abort,
+                            resume_vid=resume, on_submit=on_submit)
+        return key, url
 
     pool = ThreadPoolExecutor(max_workers=CONCURRENCY)
     futures = [pool.submit(one, x) for x in lines]
@@ -159,6 +197,7 @@ def render_clips(script, show):
         for f in as_completed(futures):
             key, url = f.result()           # raises if that clip failed
             clips[key] = url
+            record(key, done=True)
     except Exception:
         abort.set()                          # stop in-flight waits
         for f in futures:
