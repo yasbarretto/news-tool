@@ -23,6 +23,7 @@ import graphics as g
 from phase3_pipeline import ANTHROPIC_API_KEY, heygen_avatar, heygen_tts
 
 CONCURRENCY = int(os.environ.get("HEYGEN_CONCURRENCY", "3"))
+DISSOLVE = float(os.environ.get("DISSOLVE_SEC", "0.3"))  # crossfade between scenes; 0 = hard cuts
 CAPTIONS = os.environ.get("CAPTIONS", "off").lower() in ("on", "1", "true")  # broadcast has no burned-in captions
 CAPTION_POS = os.environ.get("CAPTION_POS", "custom")   # set to mid-bottom-center to fall back
 CAPTION_X = int(os.environ.get("CAPTION_X", "960"))   # custom x is the CENTER of the line (1920/2)
@@ -180,7 +181,8 @@ class _Ticker:
 
 
 def _anchor_scene(url, overlays, tick):
-    return {"elements": [{"type": "video", "src": url, "resize": "cover", "extra-time": 0.3}]
+    # no extra-time: once the clip ends that tail renders black, which showed as a flash at every cut
+    return {"elements": [{"type": "video", "src": url, "resize": "cover"}]
             + overlays + tick.for_scene()}
 
 
@@ -252,6 +254,12 @@ def build_coanchor_movie(script, show, clips, ticker_items, narration, _check=Tr
                "shadow-color": "#000000", "shadow-offset": 4}
     if CAPTION_POS == "custom":
         caption["x"], caption["y"] = CAPTION_X, CAPTION_Y
+
+    if DISSOLVE > 0:
+        # JSON2Video "fade" is a crossfade: it runs at the start of a scene and overlaps the
+        # previous one. The ticker band is identical in both scenes, so it doesn't flicker.
+        for sc in scenes[1:]:
+            sc["transition"] = {"style": "fade", "duration": DISSOLVE}
 
     movie = {
         "resolution": "full-hd", "quality": "high",
