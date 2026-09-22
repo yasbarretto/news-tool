@@ -120,5 +120,33 @@ SHOWS = {
 }
 
 
+# Photo-avatar looks from make_anchors.py, keyed by anchor name. Paste its output here.
+# Any anchor listed renders as their generated photo avatar; the rest keep their stand-in.
+PHOTOS = {
+    "Alex Reynolds": "77dcf7cdf53546ebbda279d4c6a8186a",
+    "Emma Chen": "e750ee24c8f54212a42f9624a90981d1",
+    "Victor Marshall": "2cce600e92d64e3e94cbf6da26e37b9c",
+    "Savannah Blake": "3e56cfb968a54711996f0b9d29316f6e",
+    "Chase Harrison": "1f6383f626fd44e588db582855704ae4",
+    "Natalie Vale": "81e59379529f4bc59384a5806efedd69",
+    "Tyler Brooks": "8e4905fd568149258c79c4ab763c9309",
+    "Kimiko Tan": "eedd9cc7b02a436dbfaf90c2bc9ddd86",
+    "Jack Weston": "dd506e7fdf8a45a09ba545eb4a787a2f",
+    "Taylor Brooks": "eb473fd98a774d1695858b9d855b6d35",
+    "Daniel Park": "8b444a307803483bbdd78cd4824e4de2",
+    "Madison Rivers": "2860aad2681a479fa995c3482530c14a",
+    "Marcus Bell": "69ef584ec8254765816b684dc66a1e1c",
+    "Jordan Reese": "d86d463076324104a11cf778021167da",
+    "Ryan Carter": "1e3ad74a3a20492fb828a3e6bf898021",
+    "Sienna Monroe": "3278ef50b0834b9492e69de33e634224",
+}
+
+for _show in SHOWS.values():
+    for _side in ("a", "b"):
+        _pid = PHOTOS.get(_show[_side]["name"])
+        if _pid:
+            _show[_side]["photo"] = _pid
+
+
 def get_show(key):
     return SHOWS.get(key or "")

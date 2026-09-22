@@ -152,9 +152,12 @@ def _bg():
     return {"type": "color", "value": STUDIO_BG}
 
 
-def heygen_avatar(text, avatar_id=None, voice_id=None):
+def heygen_avatar(text, avatar_id=None, voice_id=None, photo_id=None):
+    # photo_id = a generated photo-avatar look (talking_photo); otherwise a stock avatar
+    character = ({"type": "talking_photo", "talking_photo_id": photo_id} if photo_id else
+                 {"type": "avatar", "avatar_id": avatar_id or AVATAR_ID, "avatar_style": "normal"})
     scene = {
-        "character": {"type": "avatar", "avatar_id": avatar_id or AVATAR_ID, "avatar_style": "normal"},
+        "character": character,
         "voice": {"type": "text", "input_text": text, "voice_id": voice_id or VOICE_ID},
     }
     bg = _bg()

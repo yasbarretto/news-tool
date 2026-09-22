@@ -23,8 +23,9 @@ import graphics as g
 from phase3_pipeline import ANTHROPIC_API_KEY, heygen_avatar, heygen_tts
 
 CONCURRENCY = int(os.environ.get("HEYGEN_CONCURRENCY", "3"))
+CAPTIONS = os.environ.get("CAPTIONS", "off").lower() in ("on", "1", "true")  # broadcast has no burned-in captions
 CAPTION_POS = os.environ.get("CAPTION_POS", "custom")   # set to mid-bottom-center to fall back
-CAPTION_X = int(os.environ.get("CAPTION_X", "0"))
+CAPTION_X = int(os.environ.get("CAPTION_X", "960"))   # custom x is the CENTER of the line (1920/2)
 CAPTION_Y = int(os.environ.get("CAPTION_Y", "640"))
 WPS = 2.5  # spoken words per second, for estimates
 
@@ -139,7 +140,7 @@ def render_clips(script, show):
     def one(item):
         key, who, text = item
         anc = show[who]
-        return key, heygen_avatar(text, anc["avatar"], anc["voice"])
+        return key, heygen_avatar(text, anc["avatar"], anc["voice"], anc.get("photo"))
 
     with ThreadPoolExecutor(max_workers=CONCURRENCY) as pool:
         return dict(pool.map(one, lines))
@@ -150,8 +151,36 @@ def spoken_words(script):
 
 
 # ------------------------------------------------------------------ assemble
-def _anchor_scene(url, overlays):
-    return {"elements": [{"type": "video", "src": url, "resize": "cover", "extra-time": 0.3}] + overlays}
+class _Ticker:
+    """Rotates through the day's headlines, one per ~6s, carried scene to scene."""
+    EVERY = 6.0
+
+    def __init__(self, items):
+        self.items = [i for i in items if i][:8] or ["News Channel 69"]
+        self.i = 0
+
+    def _next(self):
+        h = self.items[self.i % len(self.items)]
+        self.i += 1
+        return h
+
+    def for_scene(self, duration=None):
+        els = [g.ticker_band()]
+        if not duration:                       # anchor clip: length unknown until render
+            els.append(g.ticker_item(self._next()))
+            return els
+        n = max(1, round(duration / self.EVERY))
+        seg = duration / n
+        for k in range(n):
+            last = k == n - 1
+            els.append(g.ticker_item(self._next(), start=round(k * seg, 2),
+                                     duration=-2 if last else round(seg, 2)))  # last one runs to scene end
+        return els
+
+
+def _anchor_scene(url, overlays, tick):
+    return {"elements": [{"type": "video", "src": url, "resize": "cover", "extra-time": 0.3}]
+            + overlays + tick.for_scene()}
 
 
 def voice_narration(script, show):
@@ -160,7 +189,7 @@ def voice_narration(script, show):
     return [heygen_tts(st["narration"], show[st["anchor"]]["voice"]) for st in script["stories"]]
 
 
-def _broll_scene(story, narration):
+def _broll_scene(story, narration, tick=None):
     LEAD, TAIL = 0.4, 0.5
     audio_url, dur = narration
     prompts = story.get("broll_prompts") or [story.get("headline", "news")]
@@ -171,6 +200,8 @@ def _broll_scene(story, narration):
             "start": round(i * seg, 2), "duration": round(seg + 0.35, 2)} for i, p in enumerate(prompts)]
     els.append({"type": "audio", "src": audio_url, "start": LEAD})
     els.append(g.chyron(story.get("category"), story.get("headline")))
+    if tick:
+        els += tick.for_scene(scene_dur)
     return {"duration": scene_dur, "elements": els}, dur, n
 
 
@@ -187,12 +218,13 @@ def preflight_movie(script, show, ticker_items):
 def build_coanchor_movie(script, show, clips, ticker_items, narration, _check=True):
     scenes, seen = [], set()
     narration_secs, n_images = 0.0, 0
+    tick = _Ticker(ticker_items)
 
     if "open_a" in clips:
         scenes.append(_anchor_scene(clips["open_a"],
-                                    [g.title_card(show["title"], show["a"]["name"], show["b"]["name"])]))
+                                    [g.title_card(show["title"], show["a"]["name"], show["b"]["name"])], tick))
     if "open_b" in clips:
-        scenes.append(_anchor_scene(clips["open_b"], [g.lower_third(show["b"]["name"])]))
+        scenes.append(_anchor_scene(clips["open_b"], [g.lower_third(show["b"]["name"])], tick))
         seen.add("b")
 
     for i, st in enumerate(script["stories"]):
@@ -201,18 +233,19 @@ def build_coanchor_movie(script, show, clips, ticker_items, narration, _check=Tr
         if key in clips:
             ov = [] if who in seen else [g.lower_third(show[who]["name"])]
             seen.add(who)
-            scenes.append(_anchor_scene(clips[key], ov))
-        sc, dur, n = _broll_scene(st, narration[i])
+            scenes.append(_anchor_scene(clips[key], ov, tick))
+        sc, dur, n = _broll_scene(st, narration[i], tick)
         scenes.append(sc)
         narration_secs += dur
         n_images += n
 
     if "close_a" in clips:
-        scenes.append(_anchor_scene(clips["close_a"], []))
+        scenes.append(_anchor_scene(clips["close_a"], [], tick))
     if "close_b" in clips:
-        scenes.append(_anchor_scene(clips["close_b"], [g.sign_off(show["tagline"])]))
+        scenes.append(_anchor_scene(clips["close_b"], [g.sign_off(show["tagline"])], tick))
 
     caption = {"style": "classic", "max-words-per-line": 4, "position": CAPTION_POS,
+               "font-family": "Barlow Condensed", "font-weight": "700", "font-size": 76,
                "line-color": "#FFFFFF", "word-color": "#FFD34D",
                "outline-color": "#000000", "outline-width": 5,
                "shadow-color": "#000000", "shadow-offset": 4}
@@ -222,12 +255,8 @@ def build_coanchor_movie(script, show, clips, ticker_items, narration, _check=Tr
     movie = {
         "resolution": "full-hd", "quality": "high",
         "scenes": scenes,
-        "elements": [
-            g.bug(),
-            g.live_bar(show["title"]),
-            g.ticker(ticker_items),
-            {"type": "subtitles", "language": "auto", "settings": caption},
-        ],
+        "elements": [g.bug(), g.live_bar(show["title"])]
+                    + ([{"type": "subtitles", "language": "auto", "settings": caption}] if CAPTIONS else []),
     }
     if _check:
         g.check_sizes(movie)

@@ -81,45 +81,47 @@ def live_bar(show_title):
         f'<div style="display:flex;align-items:stretch">'
         f'<span style="background:{RED};color:{WHITE};font:800 italic 29px/1 {FONT};padding:10px 17px;'
         f'display:flex;align-items:center;gap:9px;text-transform:uppercase">'
-        f'<i style="width:13px;height:13px;border-radius:50%;background:{WHITE};display:inline-block;'
-        f'animation:p 1.6s infinite"></i>Live</span>'
+        f'<i style="width:13px;height:13px;border-radius:50%;background:{WHITE};display:inline-block"></i>Live</span>'
         f'<span style="background:{NAVY};color:{WHITE};font:700 29px/1 {FONT};letter-spacing:1px;'
         f'padding:10px 19px;display:flex;align-items:center;text-transform:uppercase">{esc(show_title)}</span></div>'
-        '<style>@keyframes p{0%,100%{opacity:1}50%{opacity:.25}}</style>'
     )
     return _el(body, 820, 60, 58, 44, z=20)
 
 
 def clean_headline(t, limit=60):
     """Google News titles end in ' - Publisher'. Drop it, and keep ticker items short."""
+    import re
     t = str(t or "").strip()
     if " - " in t:
         t = t.rsplit(" - ", 1)[0].strip()
+    t = re.sub(r"^(news|breaking|update|watch|live)\s*:\s*", "", t, flags=re.I)  # "News : Update to..."
     return t if len(t) <= limit else t[:limit - 1].rstrip() + "…"
 
 
-def ticker(items, label="69 Now", seconds_per_item=7, max_items=6):
-    """Full-width scrolling ticker, whole video. The only continuous motion on screen.
-
-    Kept compact on purpose: JSON2Video rejects HTML elements that are too long
-    (HTTP 414). Styles live in ONE <style> block, not repeated per item.
-    """
-    items = [esc(clean_headline(i).upper()) for i in items if i][:max_items] or ["NEWS CHANNEL 69"]
-    track = "".join(f"<b><i></i>{t}</b>" for t in items)
-    dur = max(20, len(items) * seconds_per_item)
+def ticker_band(label="69 Now"):
+    """Ticker background + label. Static, repeated in every scene: identical pixels,
+    so the hard cuts between scenes are invisible."""
     body = (
-        "<style>"
-        f".t{{position:absolute;inset:0;display:flex;background:{DEEP};border-top:5px solid {RED}}}"
-        f".l{{background:{RED};color:#fff;font:900 italic 33px/1 {FONT};padding:0 25px;display:flex;align-items:center;flex-shrink:0;text-transform:uppercase;z-index:2}}"
-        ".w{overflow:hidden;flex:1;display:flex;align-items:center}"
-        f".r{{display:flex;white-space:nowrap;padding-left:38px;animation:roll {dur}s linear infinite;font:600 31px/1 {FONT};color:#fff;letter-spacing:.6px}}"
-        ".r b{display:inline-flex;align-items:center;gap:22px;margin-right:56px;font-weight:600}"
-        f".r i{{width:10px;height:10px;background:{RED};transform:rotate(45deg);display:inline-block}}"
-        "@keyframes roll{from{transform:translateX(0)}to{transform:translateX(-50%)}}"
-        "</style>"
-        f'<div class="t"><span class="l">{esc(label)}</span><div class="w"><div class="r">{track}{track}</div></div></div>'
+        f'<div style="position:absolute;inset:0;display:flex;background:{DEEP};border-top:5px solid {RED}">'
+        f'<span style="background:{RED};color:{WHITE};font:900 italic 33px/1 {FONT};padding:0 25px;'
+        f'display:flex;align-items:center;text-transform:uppercase">{esc(label)}</span></div>'
     )
     return _el(body, 1920, 97, 0, 983, z=30)
+
+
+def ticker_item(headline, start=0, duration=-2):
+    """One headline in the ticker, fading in. Flip-style ticker: HTML elements are captured
+    frame by frame from a fresh page, so CSS scrolling jitters instead of moving. Native
+    fades are reliable."""
+    t = esc(clean_headline(headline).upper())
+    body = (
+        f'<div style="position:absolute;inset:0;display:flex;align-items:center;gap:22px;'
+        f'font:600 33px/1 {FONT};color:{WHITE};letter-spacing:.6px;white-space:nowrap;overflow:hidden">'
+        f'<i style="width:11px;height:11px;background:{RED};transform:rotate(45deg);display:inline-block;flex-shrink:0"></i>{t}</div>'
+    )
+    el = _el(body, 1640, 92, 230, 988, duration=duration, start=start, z=31)
+    el["fade-in"] = 0.35
+    return el
 
 
 # ---------------------------------------------------------------- scene-level
