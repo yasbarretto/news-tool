@@ -22,6 +22,30 @@ _HEAD = ('<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:
          f'font-family:{FONT};overflow:hidden}}</style>')
 
 
+# JSON2Video returns 414 for oversized HTML elements. The failing ticker was ~8.8 KB
+# URL-encoded; everything else is ~1.2 KB. Budget well under 8 KB.
+MAX_HTML = 6000
+
+
+def html_size(html):
+    from urllib.parse import quote
+    return len(quote(html))
+
+
+def check_sizes(movie):
+    """Raise before rendering if any HTML element would be rejected for size."""
+    too_big = []
+    for where, els in [("movie", movie.get("elements", []))] + \
+                      [(f"scene {i}", sc.get("elements", [])) for i, sc in enumerate(movie.get("scenes", []))]:
+        for j, e in enumerate(els):
+            if e.get("type") == "html":
+                n = html_size(e["html"])
+                if n > MAX_HTML:
+                    too_big.append(f"{where} element {j}: {n:,} bytes")
+    if too_big:
+        raise RuntimeError("HTML graphics too large for JSON2Video (414): " + "; ".join(too_big))
+
+
 def esc(s):
     return _h.escape(str(s or ""), quote=True)
 
@@ -66,23 +90,34 @@ def live_bar(show_title):
     return _el(body, 820, 60, 58, 44, z=20)
 
 
-def ticker(items, label="69 Now", seconds_per_item=7):
-    """Full-width scrolling ticker, whole video. The only continuous motion on screen."""
-    items = [esc(str(i).upper()) for i in items if i][:10] or ["NEWS CHANNEL 69"]  # upper THEN escape
-    track = "".join(
-        f'<span style="display:inline-flex;align-items:center;gap:22px;margin-right:56px">'
-        f'<i style="width:10px;height:10px;background:{RED};transform:rotate(45deg);display:inline-block"></i>{t}</span>'
-        for t in items
-    )
+def clean_headline(t, limit=60):
+    """Google News titles end in ' - Publisher'. Drop it, and keep ticker items short."""
+    t = str(t or "").strip()
+    if " - " in t:
+        t = t.rsplit(" - ", 1)[0].strip()
+    return t if len(t) <= limit else t[:limit - 1].rstrip() + "…"
+
+
+def ticker(items, label="69 Now", seconds_per_item=7, max_items=6):
+    """Full-width scrolling ticker, whole video. The only continuous motion on screen.
+
+    Kept compact on purpose: JSON2Video rejects HTML elements that are too long
+    (HTTP 414). Styles live in ONE <style> block, not repeated per item.
+    """
+    items = [esc(clean_headline(i).upper()) for i in items if i][:max_items] or ["NEWS CHANNEL 69"]
+    track = "".join(f"<b><i></i>{t}</b>" for t in items)
     dur = max(20, len(items) * seconds_per_item)
     body = (
-        f'<div style="position:absolute;inset:0;display:flex;background:{DEEP};border-top:5px solid {RED}">'
-        f'<span style="background:{RED};color:{WHITE};font:900 italic 33px/1 {FONT};padding:0 25px;'
-        f'display:flex;align-items:center;flex-shrink:0;text-transform:uppercase;z-index:2">{esc(label)}</span>'
-        f'<div style="overflow:hidden;flex:1;display:flex;align-items:center">'
-        f'<div style="display:flex;white-space:nowrap;padding-left:38px;animation:roll {dur}s linear infinite;'
-        f'font:600 31px/1 {FONT};color:{WHITE};letter-spacing:.6px">{track}{track}</div></div></div>'
-        '<style>@keyframes roll{from{transform:translateX(0)}to{transform:translateX(-50%)}}</style>'
+        "<style>"
+        f".t{{position:absolute;inset:0;display:flex;background:{DEEP};border-top:5px solid {RED}}}"
+        f".l{{background:{RED};color:#fff;font:900 italic 33px/1 {FONT};padding:0 25px;display:flex;align-items:center;flex-shrink:0;text-transform:uppercase;z-index:2}}"
+        ".w{overflow:hidden;flex:1;display:flex;align-items:center}"
+        f".r{{display:flex;white-space:nowrap;padding-left:38px;animation:roll {dur}s linear infinite;font:600 31px/1 {FONT};color:#fff;letter-spacing:.6px}}"
+        ".r b{display:inline-flex;align-items:center;gap:22px;margin-right:56px;font-weight:600}"
+        f".r i{{width:10px;height:10px;background:{RED};transform:rotate(45deg);display:inline-block}}"
+        "@keyframes roll{from{transform:translateX(0)}to{transform:translateX(-50%)}}"
+        "</style>"
+        f'<div class="t"><span class="l">{esc(label)}</span><div class="w"><div class="r">{track}{track}</div></div></div>'
     )
     return _el(body, 1920, 97, 0, 983, z=30)
 

@@ -174,7 +174,17 @@ def _broll_scene(story, narration):
     return {"duration": scene_dur, "elements": els}, dur, n
 
 
-def build_coanchor_movie(script, show, clips, ticker_items, narration):
+def preflight_movie(script, show, ticker_items):
+    """Build the full movie with placeholder clips and audio, and validate it BEFORE any
+    paid render. Graphics size doesn't depend on the clip URLs, so this catches payload
+    problems (like an oversized ticker) for free."""
+    fake_clips = {k: "https://preflight/clip.mp4" for k, _, _ in _lines(script)}
+    fake_narr = [("https://preflight/audio.mp3", 8.0) for _ in script["stories"]]
+    movie, _, _ = build_coanchor_movie(script, show, fake_clips, ticker_items, fake_narr, _check=False)
+    g.check_sizes(movie)
+
+
+def build_coanchor_movie(script, show, clips, ticker_items, narration, _check=True):
     scenes, seen = [], set()
     narration_secs, n_images = 0.0, 0
 
@@ -219,4 +229,6 @@ def build_coanchor_movie(script, show, clips, ticker_items, narration):
             {"type": "subtitles", "language": "auto", "settings": caption},
         ],
     }
+    if _check:
+        g.check_sizes(movie)
     return movie, narration_secs, n_images

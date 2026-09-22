@@ -84,6 +84,8 @@ def process_show(job_id, job, show, num_stories):
             stage("writing co-anchor script", 22)
             script = coanchor.make_coanchor_script(headlines, show, num_stories, db.recent_headlines())
         db.save_script(job_id, script)
+        ticker_items = [h["title"] for h in headlines] or [s["headline"] for s in script["stories"]]
+        coanchor.preflight_movie(script, show, ticker_items)   # validate the payload before spending
 
         stage("voicing narration", 32)
         narration = coanchor.voice_narration(script, show)   # cheap; fails fast on a bad voice
@@ -93,7 +95,6 @@ def process_show(job_id, job, show, num_stories):
         avatar_secs = coanchor.spoken_words(script) / coanchor.WPS
 
         stage("building graphics + b-roll", 64)
-        ticker_items = [h["title"] for h in headlines] or [s["headline"] for s in script["stories"]]
         movie, narration_secs, n_images = coanchor.build_coanchor_movie(script, show, clips, ticker_items, narration)
 
         stage("assembling video", 80)
