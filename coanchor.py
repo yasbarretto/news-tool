@@ -1,0 +1,190 @@
+"""
+coanchor.py — co-anchored News Channel 69 episodes.
+
+Flow
+  1. Claude writes the episode as dialogue for two named anchors.
+  2. Every on-camera line renders as its own HeyGen clip, in parallel.
+  3. Each story's voiceover uses the reading anchor's voice.
+  4. JSON2Video assembles it with the graphics layer from graphics.py.
+
+Running order
+  open A (title card) -> open B (B's lower third)
+  -> per story: anchor lead (lower third on first solo appearance) -> b-roll (chyron)
+  -> close A -> close B (sign-off / AI disclosure)
+
+Stories alternate A, B, A... regardless of what the model returns.
+"""
+import os, json
+from concurrent.futures import ThreadPoolExecutor
+
+import anthropic
+
+import graphics as g
+from phase3_pipeline import ANTHROPIC_API_KEY, heygen_avatar, heygen_tts
+
+CONCURRENCY = int(os.environ.get("HEYGEN_CONCURRENCY", "3"))
+CAPTION_POS = os.environ.get("CAPTION_POS", "custom")   # set to mid-bottom-center to fall back
+CAPTION_X = int(os.environ.get("CAPTION_X", "0"))
+CAPTION_Y = int(os.environ.get("CAPTION_Y", "640"))
+WPS = 2.5  # spoken words per second, for estimates
+
+
+# ------------------------------------------------------------------ script
+def make_coanchor_script(headlines, show, n, covered=None):
+    a, b = show["a"]["name"], show["b"]["name"]
+    fa, fb = a.split()[0], b.split()[0]
+    prompt = f"""You are the producer of "{show['title']}" on News Channel 69, a short news show covering {show['topic']}.
+It is co-anchored by {a} (anchor A, opens the show) and {b} (anchor B). Write the episode as dialogue.
+
+Today's candidate headlines:
+{json.dumps(headlines, indent=2)}
+
+ALREADY COVERED — do NOT pick these again:
+{json.dumps(covered or [], indent=2)}
+
+Return ONLY valid JSON (no markdown) in exactly this shape:
+{{
+  "open":  {{"a": "<{fa}'s greeting: welcome to {show['title']}, then 'I'm {a}.' One or two short sentences.>",
+             "b": "<{fb}: 'And I'm {b}.' then tease the stories in one short sentence.>"}},
+  "stories": [
+    {{
+      "anchor": "a",
+      "category": "<ONE word desk label, e.g. TECH, MARKETS, WORLD, SPORTS, POLITICS>",
+      "headline": "<chyron: 3 to 5 words, under 28 characters>",
+      "lead": "<the anchor ON CAMERA introducing the story: ONE sentence>",
+      "narration": "<voiceover over b-roll: 1 to 3 sentences with the facts>",
+      "source_title": "<EXACT headline from the candidate list>",
+      "source_link": "<that item's link, copied exactly>",
+      "broll_prompts": ["<photorealistic editorial news image>", "..."]
+    }}
+  ],
+  "close": {{"a": "<{fa}: short wrap-up line naming the show>",
+             "b": "<{fb}: sign-off that ends with the tagline '{show['tagline']}'>"}}
+}}
+
+Rules:
+- Exactly {n} stories, all different from each other and from the already-covered list.
+- Stories alternate anchors: story 1 is "a", story 2 is "b", story 3 is "a", and so on.
+- When the reading anchor changes, the incoming anchor MAY open their lead with a brief acknowledgement of the other by first name (e.g. "Thanks, {fa}."). Use it once or twice per episode, not on every story.
+- source_title and source_link MUST be copied verbatim so a reviewer can verify claims.
+- broll_prompts: one per roughly 4 to 5 seconds of narration. Each must depict THIS story's actual subject. Anonymous people are fine. NO real named people, NO logos or readable text, NO violent or politically charged scenes.
+- Spell company and product names exactly as the company does ("OpenAI" the company is not "open AI").
+- Spell out numbers and tickers as spoken ("a hundred and thirty-five dollars").
+- Broadcast tone: confident, warm, tight. No filler."""
+    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    msg = client.messages.create(model="claude-sonnet-4-6", max_tokens=3000,
+                                 messages=[{"role": "user", "content": prompt}])
+    text = "".join(x.text for x in msg.content if x.type == "text")
+    script = json.loads(text[text.find("{"):text.rfind("}") + 1])
+    return normalize(script)
+
+
+def normalize(script):
+    """Enforce the running order the render relies on."""
+    for i, st in enumerate(script.get("stories", [])):
+        st["anchor"] = "a" if i % 2 == 0 else "b"
+        st.setdefault("category", "News")
+    script.setdefault("open", {}).setdefault("a", "")
+    script["open"].setdefault("b", "")
+    script.setdefault("close", {}).setdefault("a", "")
+    script["close"].setdefault("b", "")
+    script["format"] = "coanchor"
+    return script
+
+
+def is_coanchor(script):
+    return isinstance(script, dict) and (script.get("format") == "coanchor" or "open" in script)
+
+
+# ------------------------------------------------------------------ render
+def _lines(script):
+    """Every on-camera line, in running order: (key, anchor, text)."""
+    out = [("open_a", "a", script["open"]["a"]), ("open_b", "b", script["open"]["b"])]
+    for i, st in enumerate(script["stories"]):
+        out.append((f"lead_{i}", st["anchor"], st["lead"]))
+    out += [("close_a", "a", script["close"]["a"]), ("close_b", "b", script["close"]["b"])]
+    return [x for x in out if (x[2] or "").strip()]
+
+
+def render_clips(script, show):
+    """Render all on-camera lines in parallel. Returns {key: video_url}."""
+    lines = _lines(script)
+
+    def one(item):
+        key, who, text = item
+        anc = show[who]
+        return key, heygen_avatar(text, anc["avatar"], anc["voice"])
+
+    with ThreadPoolExecutor(max_workers=CONCURRENCY) as pool:
+        return dict(pool.map(one, lines))
+
+
+def spoken_words(script):
+    return sum(len(str(t).split()) for _, _, t in _lines(script))
+
+
+# ------------------------------------------------------------------ assemble
+def _anchor_scene(url, overlays):
+    return {"elements": [{"type": "video", "src": url, "resize": "cover", "extra-time": 0.3}] + overlays}
+
+
+def _broll_scene(story, voice):
+    LEAD, TAIL = 0.4, 0.5
+    audio_url, dur = heygen_tts(story["narration"], voice)
+    prompts = story.get("broll_prompts") or [story.get("headline", "news")]
+    n = max(1, len(prompts))
+    scene_dur = round(LEAD + dur + TAIL, 2)
+    seg = scene_dur / n
+    els = [{"type": "image", "model": "flux-pro", "prompt": p, "resize": "cover",
+            "start": round(i * seg, 2), "duration": round(seg + 0.35, 2)} for i, p in enumerate(prompts)]
+    els.append({"type": "audio", "src": audio_url, "start": LEAD})
+    els.append(g.chyron(story.get("category"), story.get("headline")))
+    return {"duration": scene_dur, "elements": els}, dur, n
+
+
+def build_coanchor_movie(script, show, clips, ticker_items):
+    scenes, seen = [], set()
+    narration_secs, n_images = 0.0, 0
+
+    if "open_a" in clips:
+        scenes.append(_anchor_scene(clips["open_a"],
+                                    [g.title_card(show["title"], show["a"]["name"], show["b"]["name"])]))
+    if "open_b" in clips:
+        scenes.append(_anchor_scene(clips["open_b"], [g.lower_third(show["b"]["name"])]))
+        seen.add("b")
+
+    for i, st in enumerate(script["stories"]):
+        who = st["anchor"]
+        key = f"lead_{i}"
+        if key in clips:
+            ov = [] if who in seen else [g.lower_third(show[who]["name"])]
+            seen.add(who)
+            scenes.append(_anchor_scene(clips[key], ov))
+        sc, dur, n = _broll_scene(st, show[who]["voice"])
+        scenes.append(sc)
+        narration_secs += dur
+        n_images += n
+
+    if "close_a" in clips:
+        scenes.append(_anchor_scene(clips["close_a"], []))
+    if "close_b" in clips:
+        scenes.append(_anchor_scene(clips["close_b"], [g.sign_off(show["tagline"])]))
+
+    caption = {"style": "classic", "max-words-per-line": 4, "position": CAPTION_POS,
+               "line-color": "#FFFFFF", "word-color": "#FFD34D",
+               "outline-color": "#000000", "outline-width": 5,
+               "shadow-color": "#000000", "shadow-offset": 4}
+    if CAPTION_POS == "custom":
+        caption["x"], caption["y"] = CAPTION_X, CAPTION_Y
+
+    movie = {
+        "resolution": "full-hd", "quality": "high",
+        "scenes": scenes,
+        "elements": [
+            g.bug(),
+            g.live_bar(show["title"]),
+            g.ticker(ticker_items),
+            {"type": "subtitles", "language": "auto", "settings": caption},
+        ],
+    }
+    return movie, narration_secs, n_images

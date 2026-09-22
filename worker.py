@@ -16,6 +16,8 @@ from datetime import datetime, timezone, timedelta
 import db
 from qa import run_auto_qa
 from publisher import run_publishing, run_previews
+from shows import get_show
+import coanchor
 from phase3_pipeline import (
     ingest, make_script, revise_script, heygen_avatar, heygen_tts, story_scene, build_movie, render_movie, estimate_cost,
 )
@@ -24,46 +26,107 @@ POLL_SECONDS = 15
 
 
 def process(job_id, num_stories):
+    job = db.get_job(job_id)
+    show = get_show(job.get("show_key"))
+    if show:
+        return process_show(job_id, job, show, num_stories)
+    return process_single(job_id, job, num_stories)
+
+
+def _stage(job_id):
     def stage(label, pct):
         db.update_job(job_id, stage=label, progress=pct)
         print(f"[job {job_id}] {label} ({pct}%)")
+    return stage
 
+
+def _rework_script(job, stage):
+    script = job["script"]
+    note, cat = job.get("reject_note"), job.get("reject_category")
+    if job.get("rework_mode") == "auto" and note and cat in ("script", "audio", "fact"):
+        stage("revising script from note", 20)
+        try:
+            script = revise_script(script, note)
+        except Exception as e:
+            print("  [rework] revise failed, using original script:", e)
+    else:
+        stage("reusing script", 20)
+    return script
+
+
+def _finish(job_id, script, headlines, url, cost, secs, show_title=None):
+    qa = run_auto_qa(script, headlines or [])
+    head = script["stories"][0]["headline"]
+    flags = [k for k in ("facts", "visual", "brand", "audio") if qa.get(k) == "warn"]
+    db.log_event("qa", job_id, head,
+                 (f"{len(flags)} flag(s): " + ", ".join(flags)) if flags else "all checks passed")
+    db.update_job(job_id, status="review", stage="ready", progress=100, cost=cost,
+                  headline=head, video_url=url, qa=qa, duration=f"~{int(secs)}s")
+    db.log_event("generated", job_id, head,
+                 f"{show_title} · entered review queue" if show_title else "entered review queue")
+    print(f"[job {job_id}] DONE -> in review queue")
+
+
+# ---------------------------------------------------------------- co-anchored show
+def process_show(job_id, job, show, num_stories):
+    stage = _stage(job_id)
     try:
-        job = db.get_job(job_id)
         headlines = []
-
         if job.get("script"):
-            # ---- REWORK: re-render from the stored script, no new story ----
-            script = job["script"]
-            note = job.get("reject_note")
-            cat = job.get("reject_category")
-            if job.get("rework_mode") == "auto" and note and cat in ("script", "audio", "fact"):
-                stage("revising script from note", 20)
-                try:
-                    script = revise_script(script, note)
-                except Exception as e:
-                    print("  [rework] revise failed, using original script:", e)
-            else:
-                stage("reusing script", 20)
-            db.save_script(job_id, script)
+            script = coanchor.normalize(_rework_script(job, stage))
         else:
-            # ---- FRESH: pick a new story ----
+            stage(f"ingesting news · {show['title']}", 10)
+            headlines = ingest(feeds=show["feeds"])
+            if not headlines:
+                db.update_job(job_id, status="failed", stage="error", error="no headlines from any feed")
+                return
+            stage("writing co-anchor script", 22)
+            script = coanchor.make_coanchor_script(headlines, show, num_stories, db.recent_headlines())
+        db.save_script(job_id, script)
+
+        stage("rendering anchors", 40)
+        clips = coanchor.render_clips(script, show)
+        avatar_secs = coanchor.spoken_words(script) / coanchor.WPS
+
+        stage("narration + b-roll", 62)
+        ticker_items = [h["title"] for h in headlines] or [s["headline"] for s in script["stories"]]
+        movie, narration_secs, n_images = coanchor.build_coanchor_movie(script, show, clips, ticker_items)
+
+        stage("assembling video", 80)
+        url = render_movie(movie)
+
+        stage("auto-QA", 95)
+        total = avatar_secs + narration_secs
+        cost = estimate_cost(script, avatar_secs, narration_secs, n_images, total,
+                             fresh=not job.get("script"))
+        _finish(job_id, script, headlines, url, cost, total, show["title"])
+    except Exception as e:
+        traceback.print_exc()
+        db.update_job(job_id, status="failed", stage="error", error=str(e)[:500])
+        db.log_event("rejected", job_id, None, "generation failed: " + str(e)[:80])
+
+
+# ---------------------------------------------------------------- single presenter (legacy)
+def process_single(job_id, job, num_stories):
+    stage = _stage(job_id)
+    try:
+        headlines = []
+        if job.get("script"):
+            script = _rework_script(job, stage)
+        else:
             stage("ingesting news", 10)
             headlines = ingest()
             if not headlines:
                 db.update_job(job_id, status="failed", stage="error", error="no headlines from any feed")
                 return
-
             stage("writing script", 25)
-            covered = db.recent_headlines()
-            script = make_script(headlines, num_stories, covered)
-            db.save_script(job_id, script)
+            script = make_script(headlines, num_stories, db.recent_headlines())
+        db.save_script(job_id, script)
 
         stage("rendering anchor", 45)
         av = job.get("avatar_id"); vo = job.get("voice_id")
         intro_url = heygen_avatar(script["intro"], av, vo)
         outro_url = heygen_avatar(script["outro"], av, vo)
-        # ~2.5 words/sec speech -> avatar seconds actually rendered
         avatar_words = len(str(script["intro"]).split()) + len(str(script["outro"]).split())
         avatar_secs = avatar_words / 2.5
 
@@ -76,22 +139,10 @@ def process(job_id, num_stories):
         url = render_movie(build_movie(intro_url, outro_url, story_scenes))
 
         stage("auto-QA", 95)
-        qa = run_auto_qa(script, headlines or [])
-        head = script["stories"][0]["headline"]
-        flags = [k for k in ("facts", "visual", "brand", "audio") if qa.get(k) == "warn"]
-        db.log_event("qa", job_id, head,
-                     (f"{len(flags)} flag(s): " + ", ".join(flags)) if flags else "all checks passed")
-
-        total_secs = avatar_secs + narration_secs
-        cost = estimate_cost(script, avatar_secs, narration_secs, n_images, total_secs,
+        total = avatar_secs + narration_secs
+        cost = estimate_cost(script, avatar_secs, narration_secs, n_images, total,
                              fresh=not job.get("script"))
-        db.update_job(
-            job_id, status="review", stage="ready", progress=100, cost=cost,
-            headline=script["stories"][0]["headline"], video_url=url, qa=qa,
-            duration=f"~{num_stories * 30 + 20}s",
-        )
-        db.log_event("generated", job_id, head, "entered review queue")
-        print(f"[job {job_id}] DONE -> in review queue")
+        _finish(job_id, script, headlines, url, cost, total)
     except Exception as e:
         traceback.print_exc()
         db.update_job(job_id, status="failed", stage="error", error=str(e)[:500])

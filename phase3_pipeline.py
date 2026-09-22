@@ -40,8 +40,8 @@ FEED_URLS = [
 ]
 
 
-def ingest(limit=15):
-    for url in FEED_URLS:
+def ingest(limit=15, feeds=None):
+    for url in (feeds or FEED_URLS):
         try:
             resp = requests.get(url, headers=UA, timeout=20)
             items = [{"title": e.title, "summary": getattr(e, "summary", "")[:300],
@@ -129,7 +129,7 @@ CURRENT SCRIPT:
 REVIEWER'S NOTE (this is what must be fixed):
 {note}
 
-Return ONLY the corrected script as valid JSON in the SAME shape (intro, stories[headline,narration,broll_prompts], outro).
+Return ONLY the corrected script as valid JSON in EXACTLY the same shape and keys as the current script.
 Change only what the note asks for; leave everything else intact. Keep numbers spelled out for speech."""
     msg = client.messages.create(model="claude-sonnet-4-6", max_tokens=2500,
                                  messages=[{"role": "user", "content": prompt}])
@@ -164,7 +164,9 @@ def heygen_avatar(text, avatar_id=None, voice_id=None):
     resp = requests.post("https://api.heygen.com/v2/video/generate", headers=HH, json=payload)
     body = resp.json()
     if not body.get("data") or not body["data"].get("video_id"):
-        raise SystemExit(f"[heygen error] HTTP {resp.status_code}: {json.dumps(body)[:600]}")
+        # RuntimeError, not SystemExit: the worker catches Exception, so one bad
+        # HeyGen response fails one job instead of killing the whole worker loop.
+        raise RuntimeError(f"[heygen error] HTTP {resp.status_code}: {json.dumps(body)[:600]}")
     vid = body["data"]["video_id"]
     while True:
         time.sleep(8)
