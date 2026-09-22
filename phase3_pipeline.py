@@ -152,7 +152,35 @@ def _bg():
     return {"type": "color", "value": STUDIO_BG}
 
 
-def heygen_avatar(text, avatar_id=None, voice_id=None, photo_id=None):
+HEYGEN_TIMEOUT = int(os.environ.get("HEYGEN_TIMEOUT_MIN", "20")) * 60
+RENDER_TIMEOUT = int(os.environ.get("RENDER_TIMEOUT_MIN", "30")) * 60
+NET = 30  # seconds: per-request network timeout, so a stalled connection can't hang the worker
+
+
+def wait_for(label, poll, is_done, is_failed, timeout, every=8):
+    """Poll until done. Retries transient errors, logs status changes, and GIVES UP at the
+    deadline. The worker runs one job at a time, so an unbounded wait freezes everything."""
+    deadline = time.time() + timeout
+    last = None
+    while time.time() < deadline:
+        time.sleep(every)
+        try:
+            d = poll() or {}
+        except Exception as e:
+            print(f"  [{label}] poll error, retrying: {str(e)[:140]}")
+            continue
+        st = d.get("status")
+        if st != last:
+            print(f"  [{label}] {st}")
+            last = st
+        if is_done(d):
+            return d
+        if is_failed(d):
+            raise RuntimeError(f"{label} failed: {str(d)[:400]}")
+    raise RuntimeError(f"{label} timed out after {timeout // 60} min (last status: {last})")
+
+
+def heygen_avatar(text, avatar_id=None, voice_id=None, photo_id=None, label="heygen"):
     # photo_id = a generated photo-avatar look (talking_photo); otherwise a stock avatar
     character = ({"type": "talking_photo", "talking_photo_id": photo_id} if photo_id else
                  {"type": "avatar", "avatar_id": avatar_id or AVATAR_ID, "avatar_style": "normal"})
@@ -164,25 +192,27 @@ def heygen_avatar(text, avatar_id=None, voice_id=None, photo_id=None):
     if bg:
         scene["background"] = bg
     payload = {"video_inputs": [scene], "aspect_ratio": "16:9", "test": TEST}
-    resp = requests.post("https://api.heygen.com/v2/video/generate", headers=HH, json=payload)
+    resp = requests.post("https://api.heygen.com/v2/video/generate", headers=HH, json=payload, timeout=NET)
     body = resp.json()
     if not body.get("data") or not body["data"].get("video_id"):
         # RuntimeError, not SystemExit: the worker catches Exception, so one bad
         # HeyGen response fails one job instead of killing the whole worker loop.
         raise RuntimeError(f"[heygen error] HTTP {resp.status_code}: {json.dumps(body)[:600]}")
     vid = body["data"]["video_id"]
-    while True:
-        time.sleep(8)
-        d = requests.get(f"https://api.heygen.com/v1/video_status.get?video_id={vid}", headers=HH).json()["data"]
-        if d.get("status") == "completed":
-            return d["video_url"]
-        if d.get("status") in ("failed", "error"):
-            raise RuntimeError(d)
+    print(f"  [{label}] submitted {vid}")
+    d = wait_for(
+        label,
+        lambda: requests.get(f"https://api.heygen.com/v1/video_status.get?video_id={vid}",
+                             headers=HH, timeout=NET).json().get("data"),
+        lambda d: d.get("status") == "completed" and d.get("video_url"),
+        lambda d: d.get("status") in ("failed", "error"),
+        HEYGEN_TIMEOUT)
+    return d["video_url"]
 
 
 def heygen_tts(text, voice_id=None):
     r = requests.post("https://api.heygen.com/v3/voices/speech", headers=HH,
-                      json={"text": text, "voice_id": voice_id or VOICE_ID}).json()
+                      json={"text": text, "voice_id": voice_id or VOICE_ID}, timeout=NET).json()
     d = r.get("data", {})
     if not d.get("audio_url"):
         raise RuntimeError(r)
@@ -194,25 +224,30 @@ SAFE_PROMPT = "abstract futuristic technology background, glowing blue digital n
 def render_movie(movie, max_retries=3):
     import re
     for attempt in range(max_retries):
-        proj = requests.post("https://api.json2video.com/v2/movies", headers=JH, json=movie).json()["project"]
-        while True:
-            time.sleep(10)
-            m = requests.get(f"https://api.json2video.com/v2/movies?project={proj}", headers=JH).json()["movie"]
-            print("  json2video:", m.get("status"))
-            if m.get("status") == "done":
-                return m["url"]
-            if m.get("status") == "error":
-                msg = m.get("message", "")
-                hit = re.search(r"Scene #(\d+)", msg)
-                if hit and attempt < max_retries - 1:
-                    idx = int(hit.group(1)) - 1
-                    if 0 <= idx < len(movie["scenes"]):
-                        for el in movie["scenes"][idx]["elements"]:
-                            if el.get("type") == "image" and el.get("model"):
-                                el["prompt"] = SAFE_PROMPT
-                        print(f"  [retry] scene #{idx + 1} image flagged -> safe fallback, re-rendering")
-                        break  # re-render the patched movie
-                raise RuntimeError(msg)
+        resp = requests.post("https://api.json2video.com/v2/movies", headers=JH, json=movie, timeout=NET).json()
+        proj = resp.get("project")
+        if not proj:
+            raise RuntimeError(f"json2video rejected the movie: {str(resp)[:400]}")
+        m = wait_for(
+            "json2video",
+            lambda: requests.get(f"https://api.json2video.com/v2/movies?project={proj}",
+                                 headers=JH, timeout=NET).json().get("movie"),
+            lambda m: m.get("status") in ("done", "error"),   # errors handled below (retry logic)
+            lambda m: False,
+            RENDER_TIMEOUT, every=10)
+        if m.get("status") == "done":
+            return m["url"]
+        msg = m.get("message", "")
+        hit = re.search(r"Scene #(\d+)", msg)
+        if hit and attempt < max_retries - 1:
+            idx = int(hit.group(1)) - 1
+            if 0 <= idx < len(movie["scenes"]):
+                for el in movie["scenes"][idx]["elements"]:
+                    if el.get("type") == "image" and el.get("model"):
+                        el["prompt"] = SAFE_PROMPT
+                print(f"  [retry] scene #{idx + 1} image flagged -> safe fallback, re-rendering")
+                continue  # re-render the patched movie
+        raise RuntimeError(msg)
     raise RuntimeError("render failed after retries")
 
 

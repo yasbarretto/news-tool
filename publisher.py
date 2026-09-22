@@ -10,6 +10,8 @@ testable today. Swap `mock_upload()` for `youtube_upload()` when OAuth is ready.
 import os, time, json, requests
 import psycopg
 
+from phase3_pipeline import wait_for, RENDER_TIMEOUT, NET
+
 J2V_KEY = os.environ.get("JSON2VIDEO_API_KEY")
 JH = {"x-api-key": J2V_KEY, "Content-Type": "application/json"}
 MOCK = os.environ.get("MOCK_PUBLISH", "true").lower() == "true"
@@ -74,14 +76,18 @@ def splice_ad(video_url, creative, slot=None, news_secs=None):
         scenes = [ad_scene, news_scene]
 
     movie = {"resolution": "full-hd", "quality": "high", "scenes": scenes}
-    proj = requests.post("https://api.json2video.com/v2/movies", headers=JH, json=movie).json()["project"]
-    while True:
-        time.sleep(10)
-        m = requests.get(f"https://api.json2video.com/v2/movies?project={proj}", headers=JH).json()["movie"]
-        if m.get("status") == "done":
-            return m["url"]
-        if m.get("status") == "error":
-            raise RuntimeError(m.get("message"))
+    resp = requests.post("https://api.json2video.com/v2/movies", headers=JH, json=movie, timeout=NET).json()
+    proj = resp.get("project")
+    if not proj:
+        raise RuntimeError(f"json2video rejected the splice: {str(resp)[:400]}")
+    m = wait_for(
+        f"splice {sponsor}",
+        lambda: requests.get(f"https://api.json2video.com/v2/movies?project={proj}",
+                             headers=JH, timeout=NET).json().get("movie"),
+        lambda m: m.get("status") == "done",
+        lambda m: m.get("status") == "error",
+        RENDER_TIMEOUT, every=10)
+    return m["url"]
 
 
 def mock_upload(video_url, headline):

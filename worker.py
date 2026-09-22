@@ -177,6 +177,16 @@ def maybe_enqueue(s):
 
 def main():
     print("News69 worker up. polling every", POLL_SECONDS, "s")
+    try:
+        jobs, prev = db.recover_stuck()
+        if jobs:
+            print(f"[recover] marked interrupted jobs failed: {jobs}")
+            for j in jobs:
+                db.log_event("rejected", j, None, "interrupted: worker restarted mid-job")
+        if prev:
+            print(f"[recover] reset half-built previews: {prev}")
+    except Exception as e:
+        print("[recover] skipped:", e)
     while True:
         try:
             settings = db.get_settings()

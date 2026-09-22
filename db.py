@@ -102,3 +102,20 @@ def get_job(vid):
 def save_script(vid, script):
     with get_conn() as c:
         c.execute("UPDATE public.news69_videos SET script=%s WHERE id=%s", (json.dumps(script), vid))
+
+
+def recover_stuck():
+    """On worker start, nothing can still be in flight: any job left 'processing' was cut off
+    by a restart or crash and would otherwise sit there forever (only 'queued' jobs are picked
+    up). Marks them failed with a clear reason, and resets half-built previews.
+    Assumes ONE worker service, which is how News69 runs."""
+    with get_conn() as c:
+        jobs = c.execute(
+            "UPDATE public.news69_videos SET status='failed', stage='error', "
+            "error='interrupted: worker restarted mid-job' WHERE status='processing' RETURNING id"
+        ).fetchall()
+        prev = c.execute(
+            "UPDATE public.news69_videos SET preview_status='error' "
+            "WHERE preview_status='building' RETURNING id"
+        ).fetchall()
+    return [r[0] for r in jobs], [r[0] for r in prev]

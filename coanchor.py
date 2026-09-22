@@ -140,7 +140,8 @@ def render_clips(script, show):
     def one(item):
         key, who, text = item
         anc = show[who]
-        return key, heygen_avatar(text, anc["avatar"], anc["voice"], anc.get("photo"))
+        return key, heygen_avatar(text, anc["avatar"], anc["voice"], anc.get("photo"),
+                                  label=f"clip {key} · {anc['name']}")
 
     with ThreadPoolExecutor(max_workers=CONCURRENCY) as pool:
         return dict(pool.map(one, lines))
