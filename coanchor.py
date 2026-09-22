@@ -29,6 +29,32 @@ CAPTION_Y = int(os.environ.get("CAPTION_Y", "640"))
 WPS = 2.5  # spoken words per second, for estimates
 
 
+# ------------------------------------------------------------------ voice preflight
+# Probe each voice with a one-word TTS call instead of reading HeyGen's voice list:
+# the list endpoint paginates in ways we can't rely on, and a truncated list would
+# wrongly reject good voices. A probe is definitive and costs a fraction of a cent.
+_VOICE_OK = {}   # voice_id -> True/False, cached for the life of the worker
+
+
+def _voice_works(voice_id):
+    if voice_id not in _VOICE_OK:
+        try:
+            heygen_tts("Checking.", voice_id)
+            _VOICE_OK[voice_id] = True
+        except Exception as e:
+            print(f"  [voices] {voice_id} failed narration TTS: {str(e)[:160]}")
+            _VOICE_OK[voice_id] = False
+    return _VOICE_OK[voice_id]
+
+
+def check_voices(show):
+    """Fail fast, before any paid render, if an anchor's voice can't do narration TTS."""
+    bad = [f"{show[k]['name']} ({show[k]['voice']})" for k in ("a", "b") if not _voice_works(show[k]["voice"])]
+    if bad:
+        raise RuntimeError(f"{show['title']}: voice not supported for narration TTS: {', '.join(bad)}. "
+                           f"Pick a Starfish voice for this anchor in shows.py.")
+
+
 # ------------------------------------------------------------------ script
 def make_coanchor_script(headlines, show, n, covered=None):
     a, b = show["a"]["name"], show["b"]["name"]
@@ -128,9 +154,15 @@ def _anchor_scene(url, overlays):
     return {"elements": [{"type": "video", "src": url, "resize": "cover", "extra-time": 0.3}] + overlays}
 
 
-def _broll_scene(story, voice):
+def voice_narration(script, show):
+    """TTS every story's voiceover. Cheap and fast, so it runs BEFORE the anchor clips:
+    a voice problem fails in seconds instead of after minutes of avatar renders."""
+    return [heygen_tts(st["narration"], show[st["anchor"]]["voice"]) for st in script["stories"]]
+
+
+def _broll_scene(story, narration):
     LEAD, TAIL = 0.4, 0.5
-    audio_url, dur = heygen_tts(story["narration"], voice)
+    audio_url, dur = narration
     prompts = story.get("broll_prompts") or [story.get("headline", "news")]
     n = max(1, len(prompts))
     scene_dur = round(LEAD + dur + TAIL, 2)
@@ -142,7 +174,7 @@ def _broll_scene(story, voice):
     return {"duration": scene_dur, "elements": els}, dur, n
 
 
-def build_coanchor_movie(script, show, clips, ticker_items):
+def build_coanchor_movie(script, show, clips, ticker_items, narration):
     scenes, seen = [], set()
     narration_secs, n_images = 0.0, 0
 
@@ -160,7 +192,7 @@ def build_coanchor_movie(script, show, clips, ticker_items):
             ov = [] if who in seen else [g.lower_third(show[who]["name"])]
             seen.add(who)
             scenes.append(_anchor_scene(clips[key], ov))
-        sc, dur, n = _broll_scene(st, show[who]["voice"])
+        sc, dur, n = _broll_scene(st, narration[i])
         scenes.append(sc)
         narration_secs += dur
         n_images += n

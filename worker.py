@@ -71,6 +71,7 @@ def _finish(job_id, script, headlines, url, cost, secs, show_title=None):
 def process_show(job_id, job, show, num_stories):
     stage = _stage(job_id)
     try:
+        coanchor.check_voices(show)   # before anything is spent
         headlines = []
         if job.get("script"):
             script = coanchor.normalize(_rework_script(job, stage))
@@ -84,13 +85,16 @@ def process_show(job_id, job, show, num_stories):
             script = coanchor.make_coanchor_script(headlines, show, num_stories, db.recent_headlines())
         db.save_script(job_id, script)
 
-        stage("rendering anchors", 40)
+        stage("voicing narration", 32)
+        narration = coanchor.voice_narration(script, show)   # cheap; fails fast on a bad voice
+
+        stage("rendering anchors", 42)
         clips = coanchor.render_clips(script, show)
         avatar_secs = coanchor.spoken_words(script) / coanchor.WPS
 
-        stage("narration + b-roll", 62)
+        stage("building graphics + b-roll", 64)
         ticker_items = [h["title"] for h in headlines] or [s["headline"] for s in script["stories"]]
-        movie, narration_secs, n_images = coanchor.build_coanchor_movie(script, show, clips, ticker_items)
+        movie, narration_secs, n_images = coanchor.build_coanchor_movie(script, show, clips, ticker_items, narration)
 
         stage("assembling video", 80)
         url = render_movie(movie)
