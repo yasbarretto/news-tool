@@ -15,12 +15,13 @@ Running order
 Stories alternate A, B, A... regardless of what the model returns.
 """
 import os, json
-from concurrent.futures import ThreadPoolExecutor
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import anthropic
 
 import graphics as g
-from phase3_pipeline import ANTHROPIC_API_KEY, heygen_avatar, heygen_tts
+from phase3_pipeline import ANTHROPIC_API_KEY, heygen_avatar, heygen_tts, Aborted
 
 CONCURRENCY = int(os.environ.get("HEYGEN_CONCURRENCY", "3"))
 DISSOLVE = float(os.environ.get("DISSOLVE_SEC", "0.3"))  # crossfade between scenes; 0 = hard cuts
@@ -135,17 +136,37 @@ def _lines(script):
 
 
 def render_clips(script, show):
-    """Render all on-camera lines in parallel. Returns {key: video_url}."""
+    """Render all on-camera lines in parallel. Returns {key: video_url}.
+
+    Fails fast: as soon as one clip gives up, clips not yet submitted are cancelled
+    (never paid for) and in-flight waits stop, instead of finishing an episode that's
+    already lost."""
     lines = _lines(script)
+    abort = threading.Event()
 
     def one(item):
         key, who, text = item
+        if abort.is_set():                  # job already lost: don't submit (don't pay)
+            raise Aborted(f"clip {key} skipped: job already failed")
         anc = show[who]
         return key, heygen_avatar(text, anc["avatar"], anc["voice"], anc.get("photo"),
-                                  label=f"clip {key} · {anc['name']}")
+                                  label=f"clip {key} · {anc['name']}", abort=abort)
 
-    with ThreadPoolExecutor(max_workers=CONCURRENCY) as pool:
-        return dict(pool.map(one, lines))
+    pool = ThreadPoolExecutor(max_workers=CONCURRENCY)
+    futures = [pool.submit(one, x) for x in lines]
+    clips = {}
+    try:
+        for f in as_completed(futures):
+            key, url = f.result()           # raises if that clip failed
+            clips[key] = url
+    except Exception:
+        abort.set()                          # stop in-flight waits
+        for f in futures:
+            f.cancel()                       # drop clips not yet submitted
+        pool.shutdown(wait=True, cancel_futures=True)
+        raise
+    pool.shutdown(wait=True)
+    return clips
 
 
 def spoken_words(script):

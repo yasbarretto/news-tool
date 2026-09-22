@@ -152,17 +152,31 @@ def _bg():
     return {"type": "color", "value": STUDIO_BG}
 
 
-HEYGEN_TIMEOUT = int(os.environ.get("HEYGEN_TIMEOUT_MIN", "20")) * 60
+# Per-attempt wait for one HeyGen clip. A normal clip renders in 1-5 min; a stuck one gets
+# RESUBMITTED (a fresh submission went through in minutes when the first sat 20+ min).
+HEYGEN_TIMEOUT = int(os.environ.get("HEYGEN_ATTEMPT_MIN", "10")) * 60
+HEYGEN_ATTEMPTS = int(os.environ.get("HEYGEN_ATTEMPTS", "2"))
 RENDER_TIMEOUT = int(os.environ.get("RENDER_TIMEOUT_MIN", "30")) * 60
 NET = 30  # seconds: per-request network timeout, so a stalled connection can't hang the worker
 
 
-def wait_for(label, poll, is_done, is_failed, timeout, every=8):
+class WaitTimeout(RuntimeError):
+    """Gave up waiting (as opposed to the service reporting a failure)."""
+
+
+class Aborted(RuntimeError):
+    """Another part of the job already failed, so stop waiting on this one."""
+
+
+def wait_for(label, poll, is_done, is_failed, timeout, every=8, abort=None):
     """Poll until done. Retries transient errors, logs status changes, and GIVES UP at the
-    deadline. The worker runs one job at a time, so an unbounded wait freezes everything."""
+    deadline. The worker runs one job at a time, so an unbounded wait freezes everything.
+    `abort` (a threading.Event) stops the wait early when the job is already lost."""
     deadline = time.time() + timeout
     last = None
     while time.time() < deadline:
+        if abort is not None and abort.is_set():
+            raise Aborted(f"{label} stopped: job already failed")
         time.sleep(every)
         try:
             d = poll() or {}
@@ -177,10 +191,10 @@ def wait_for(label, poll, is_done, is_failed, timeout, every=8):
             return d
         if is_failed(d):
             raise RuntimeError(f"{label} failed: {str(d)[:400]}")
-    raise RuntimeError(f"{label} timed out after {timeout // 60} min (last status: {last})")
+    raise WaitTimeout(f"{label} timed out after {timeout // 60} min (last status: {last})")
 
 
-def heygen_avatar(text, avatar_id=None, voice_id=None, photo_id=None, label="heygen"):
+def heygen_avatar(text, avatar_id=None, voice_id=None, photo_id=None, label="heygen", abort=None):
     # photo_id = a generated photo-avatar look (talking_photo); otherwise a stock avatar
     character = ({"type": "talking_photo", "talking_photo_id": photo_id} if photo_id else
                  {"type": "avatar", "avatar_id": avatar_id or AVATAR_ID, "avatar_style": "normal"})
@@ -192,22 +206,30 @@ def heygen_avatar(text, avatar_id=None, voice_id=None, photo_id=None, label="hey
     if bg:
         scene["background"] = bg
     payload = {"video_inputs": [scene], "aspect_ratio": "16:9", "test": TEST}
-    resp = requests.post("https://api.heygen.com/v2/video/generate", headers=HH, json=payload, timeout=NET)
-    body = resp.json()
-    if not body.get("data") or not body["data"].get("video_id"):
-        # RuntimeError, not SystemExit: the worker catches Exception, so one bad
-        # HeyGen response fails one job instead of killing the whole worker loop.
-        raise RuntimeError(f"[heygen error] HTTP {resp.status_code}: {json.dumps(body)[:600]}")
-    vid = body["data"]["video_id"]
-    print(f"  [{label}] submitted {vid}")
-    d = wait_for(
-        label,
-        lambda: requests.get(f"https://api.heygen.com/v1/video_status.get?video_id={vid}",
-                             headers=HH, timeout=NET).json().get("data"),
-        lambda d: d.get("status") == "completed" and d.get("video_url"),
-        lambda d: d.get("status") in ("failed", "error"),
-        HEYGEN_TIMEOUT)
-    return d["video_url"]
+    for attempt in range(1, HEYGEN_ATTEMPTS + 1):
+        if abort is not None and abort.is_set():  # never submit (and pay) for a lost job
+            raise Aborted(f"{label} not submitted: job already failed")
+        resp = requests.post("https://api.heygen.com/v2/video/generate", headers=HH, json=payload, timeout=NET)
+        body = resp.json()
+        if not body.get("data") or not body["data"].get("video_id"):
+            # RuntimeError, not SystemExit: the worker catches Exception, so one bad
+            # HeyGen response fails one job instead of killing the whole worker loop.
+            raise RuntimeError(f"[heygen error] HTTP {resp.status_code}: {json.dumps(body)[:600]}")
+        vid = body["data"]["video_id"]
+        print(f"  [{label}] submitted {vid}" + (f" (attempt {attempt})" if attempt > 1 else ""))
+        try:
+            d = wait_for(
+                label,
+                lambda: requests.get(f"https://api.heygen.com/v1/video_status.get?video_id={vid}",
+                                     headers=HH, timeout=NET).json().get("data"),
+                lambda d: d.get("status") == "completed" and d.get("video_url"),
+                lambda d: d.get("status") in ("failed", "error"),   # real failure: no retry
+                HEYGEN_TIMEOUT, abort=abort)
+            return d["video_url"]
+        except WaitTimeout as e:
+            if attempt == HEYGEN_ATTEMPTS:
+                raise WaitTimeout(f"{e} · gave up after {attempt} attempts")
+            print(f"  [{label}] stuck at HeyGen, resubmitting")
 
 
 def heygen_tts(text, voice_id=None):
