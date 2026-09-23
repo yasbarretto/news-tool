@@ -12,9 +12,13 @@ Layout (matches news69_video_frames.html):
   captions   lifted above the lower zone (set in pipeline)
   bottom     ticker, full width
 """
+import os
 import html as _h
 
 NAVY, DEEP, RED, WHITE, SILVER = "#0A1F4F", "#061233", "#D0112B", "#FFFFFF", "#C9D1DE"
+LOGO_URL = os.environ.get("LOGO_URL", "")   # hosted PNG; falls back to the text bug
+LOGO_W, LOGO_H = 112, 110
+
 FONT = "'Barlow Condensed','Arial Narrow','Helvetica Neue',Arial,sans-serif"
 _HEAD = ('<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:'
          'ital,wght@0,600;0,700;0,800;1,800;1,900&display=swap" rel="stylesheet">'
@@ -65,7 +69,16 @@ def _el(body, w, h, x, y, duration=-2, start=0, fade=None, z=10):
 
 # ---------------------------------------------------------------- movie-level
 def bug():
-    """NEWS CHANNEL 69 logo bug, top-right, whole video. Swap for the PNG when it arrives."""
+    """NEWS CHANNEL 69 logo bug, top-right, whole video.
+
+    Uses the real logo when LOGO_URL is set, otherwise the text-built stand-in, so the
+    worker still renders if the asset is missing or the host is down."""
+    if LOGO_URL:
+        return {"type": "image", "src": LOGO_URL, "position": "custom",
+                "x": 1920 - 58 - LOGO_W, "y": 36,
+                "width": LOGO_W, "height": LOGO_H,
+                "duration": -2, "z-index": 20}
+
     body = (
         f'<div style="position:absolute;right:0;top:0;display:flex;align-items:center;gap:9px;'
         f'background:{WHITE};border-radius:9px;padding:8px 15px;box-shadow:0 6px 18px rgba(0,0,0,.28)">'
