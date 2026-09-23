@@ -32,6 +32,9 @@ CAPTION_POS = os.environ.get("CAPTION_POS", "custom")   # set to mid-bottom-cent
 CAPTION_X = int(os.environ.get("CAPTION_X", "960"))   # custom x is the CENTER of the line (1920/2)
 CAPTION_Y = int(os.environ.get("CAPTION_Y", "640"))
 WPS = 2.5  # spoken words per second, for estimates
+# Scale composed-look clips past the frame to crop HeyGen's side padding (~50px each side
+# at 1080p needs >= 1.055). Base-photo clips are ~16:9 and never zoomed. 1.0 = off.
+ANCHOR_ZOOM = float(os.environ.get("ANCHOR_ZOOM", "1.07"))
 
 
 # ------------------------------------------------------------------ voice preflight
@@ -257,10 +260,22 @@ class _Ticker:
         return els
 
 
-def _anchor_scene(url, overlays, tick):
+def _anchor_video(url, padded=False):
+    """Anchor clip. `padded` clips are scaled past the canvas edges by ANCHOR_ZOOM.
+
+    Composed looks are 1024x608 (1.68:1), so HeyGen pads the talking photo with ~50px light
+    bars left and right. The bars are pixels in the clip, so resize:"cover" can't remove
+    them; scaling the clip past the frame pushes them off-canvas."""
+    if not padded or ANCHOR_ZOOM <= 1.0:
+        return {"type": "video", "src": url, "resize": "cover"}
+    w, h = round(1920 * ANCHOR_ZOOM), round(1080 * ANCHOR_ZOOM)
+    return {"type": "video", "src": url, "resize": "cover", "position": "custom",
+            "x": -((w - 1920) // 2), "y": -((h - 1080) // 2), "width": w, "height": h}
+
+
+def _anchor_scene(url, overlays, tick, padded=False):
     # no extra-time: once the clip ends that tail renders black, which showed as a flash at every cut
-    return {"elements": [{"type": "video", "src": url, "resize": "cover"}]
-            + overlays + tick.for_scene()}
+    return {"elements": [_anchor_video(url, padded)] + overlays + tick.for_scene()}
 
 
 def voice_narration(script, show):
@@ -299,12 +314,17 @@ def build_coanchor_movie(script, show, clips, ticker_items, narration, _check=Tr
     scenes, seen = [], set()
     narration_secs, n_images = 0.0, 0
     tick = _Ticker(ticker_items)
+    # clips rendered from a composed look (1024x608, side-padded by HeyGen)
+    padded = {key for key, who, _, serious in _lines(script)
+              if serious and show[who].get("photo_serious")}
 
     if "open_a" in clips:
         scenes.append(_anchor_scene(clips["open_a"],
-                                    [g.title_card(show["title"], show["a"]["name"], show["b"]["name"])], tick))
+                                    [g.title_card(show["title"], show["a"]["name"], show["b"]["name"])], tick,
+                                    "open_a" in padded))
     if "open_b" in clips:
-        scenes.append(_anchor_scene(clips["open_b"], [g.lower_third(show["b"]["name"])], tick))
+        scenes.append(_anchor_scene(clips["open_b"], [g.lower_third(show["b"]["name"])], tick,
+                                    "open_b" in padded))
         seen.add("b")
 
     for i, st in enumerate(script["stories"]):
@@ -313,16 +333,17 @@ def build_coanchor_movie(script, show, clips, ticker_items, narration, _check=Tr
         if key in clips:
             ov = [] if who in seen else [g.lower_third(show[who]["name"])]
             seen.add(who)
-            scenes.append(_anchor_scene(clips[key], ov, tick))
+            scenes.append(_anchor_scene(clips[key], ov, tick, key in padded))
         sc, dur, n = _broll_scene(st, narration[i], tick)
         scenes.append(sc)
         narration_secs += dur
         n_images += n
 
     if "close_a" in clips:
-        scenes.append(_anchor_scene(clips["close_a"], [], tick))
+        scenes.append(_anchor_scene(clips["close_a"], [], tick, "close_a" in padded))
     if "close_b" in clips:
-        scenes.append(_anchor_scene(clips["close_b"], [g.sign_off(show["tagline"])], tick))
+        scenes.append(_anchor_scene(clips["close_b"], [g.sign_off(show["tagline"])], tick,
+                                    "close_b" in padded))
 
     caption = {"style": "classic", "max-words-per-line": 4, "position": CAPTION_POS,
                "font-family": "Barlow Condensed", "font-weight": "700", "font-size": 76,

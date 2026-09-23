@@ -120,9 +120,34 @@ SHOWS = {
 }
 
 
-# Photo-avatar looks from make_anchors.py, keyed by anchor name. Paste its output here.
-# Any anchor listed renders as their generated photo avatar; the rest keep their stand-in.
+# Photo-avatar looks, keyed by anchor name. Any anchor listed renders as their photo
+# avatar; the rest keep their stand-in.
+#
+# These are the ORIGINAL base photos (2752x1536, ~16:9) that rendered video 28 full-width
+# and sharp. Looks made with `make_anchors.py looks` (onair / composed) come back from
+# HeyGen at 1024x608 (1.68:1): HeyGen pads them with ~50px side bars and upscales them
+# ~1.9x, which is the blur and the bars. Don't swap those in here.
 PHOTOS = {
+    "Alex Reynolds": "4bb68bc3e9914e379c494ec7d0aaaab4",
+    "Emma Chen": "95b9d6cf68344cd5bc8a7262a3656404",
+    "Victor Marshall": "b437f0d2947a48fc96909b7292c189e8",
+    "Savannah Blake": "3499860cd215432ab585e39d866b48e8",
+    "Chase Harrison": "4a761892b3484f67933b1d8e8705cd66",
+    "Natalie Vale": "bf13fdaa7d6f47469ab35c58e44f805e",
+    "Tyler Brooks": "52fce7ed6d254ab0b76dddc8073e3915",
+    "Kimiko Tan": "5877bf9e7b4e4f9da2e0491468568fa8",
+    "Jack Weston": "215fed08698e49a2b8f87ef986151ac1",
+    "Taylor Brooks": "a08d5b7c1f6d48c1970bbd355bea7769",
+    "Daniel Park": "79c21a39bd1e460882a97fa59c6d5fbd",
+    "Madison Rivers": "a72e367904c74ebabad49c4e690f4ca0",
+    "Marcus Bell": "f63fedc97a774403bea1a8daae93afa3",
+    "Jordan Reese": "33faaa252d884d08b88f77c74f9787de",
+    "Ryan Carter": "6adf655c70f4403daada317da5996b5c",
+    "Sienna Monroe": "27da9a9545fa4bdd8e02e03b1988dd4b",
+}
+
+# The 1024x608 'onair' looks, kept for reference only. Not used: see above.
+PHOTOS_ONAIR = {
     "Emma Chen": "2c1eea03050c427a9775131ff6a986f0",
     "Alex Reynolds": "59bc0c410bdb43d3a69f02e185117426",
     "Victor Marshall": "ffda99f37c324ef6ac158ae84752d70e",
@@ -143,6 +168,8 @@ PHOTOS = {
 
 # Composed (not smiling) looks of the SAME anchors, from `make_anchors.py looks`.
 # Used for somber stories. Anchors without one fall back to their warm look.
+# Also 1024x608: coanchor zooms these clips (ANCHOR_ZOOM) to hide the side bars, but they
+# stay softer than the base photos.
 PHOTOS_SERIOUS = {
     "Alex Reynolds": "b5d25140adc74540ab586ff5a1a3633e",
     "Emma Chen": "8088dab3a6864d80bbe152952f526cb0",
