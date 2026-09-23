@@ -156,6 +156,17 @@ def _bg():
 # RESUBMITTED (a fresh submission went through in minutes when the first sat 20+ min).
 HEYGEN_TIMEOUT = int(os.environ.get("HEYGEN_ATTEMPT_MIN", "10")) * 60
 HEYGEN_ATTEMPTS = int(os.environ.get("HEYGEN_ATTEMPTS", "2"))
+# Render the clip at the same size as the finished movie. Without "dimension" HeyGen uses
+# its default (720p), which JSON2Video then upscales to 1080 — soft faces and text.
+CLIP_W = int(os.environ.get("HEYGEN_WIDTH", "1920"))
+CLIP_H = int(os.environ.get("HEYGEN_HEIGHT", "1080"))
+# Photo-avatar animation controls. We were sending none, so HeyGen chose for us —
+# "happy" adds a joyful expression on top of the photo, which is why calm stills came
+# back beaming. "default" keeps the face as generated; "stable" keeps movement minimal,
+# which is what a news read wants.
+TP_EXPRESSION = os.environ.get("TALKING_EXPRESSION", "default")     # default | happy
+TP_STYLE = os.environ.get("TALKING_STYLE", "stable")                # stable | expressive
+TP_SUPERRES = os.environ.get("TALKING_SUPERRES", "true").lower() in ("1", "true", "yes")
 RENDER_TIMEOUT = int(os.environ.get("RENDER_TIMEOUT_MIN", "30")) * 60
 NET = 30  # seconds: per-request network timeout, so a stalled connection can't hang the worker
 
@@ -216,7 +227,9 @@ def heygen_avatar(text, avatar_id=None, voice_id=None, photo_id=None, label="hey
                 the job requeues and resumes it instead.
     """
     # photo_id = a generated photo-avatar look (talking_photo); otherwise a stock avatar
-    character = ({"type": "talking_photo", "talking_photo_id": photo_id} if photo_id else
+    character = ({"type": "talking_photo", "talking_photo_id": photo_id,
+                  "expression": TP_EXPRESSION, "talking_style": TP_STYLE,
+                  "super_resolution": TP_SUPERRES} if photo_id else
                  {"type": "avatar", "avatar_id": avatar_id or AVATAR_ID, "avatar_style": "normal"})
     scene = {
         "character": character,
@@ -225,7 +238,8 @@ def heygen_avatar(text, avatar_id=None, voice_id=None, photo_id=None, label="hey
     bg = _bg()
     if bg:
         scene["background"] = bg
-    payload = {"video_inputs": [scene], "aspect_ratio": "16:9", "test": TEST}
+    payload = {"video_inputs": [scene], "aspect_ratio": "16:9", "test": TEST,
+               "dimension": {"width": CLIP_W, "height": CLIP_H}}
 
     if resume_vid:
         print(f"  [{label}] resuming {resume_vid}")
@@ -242,6 +256,11 @@ def heygen_avatar(text, avatar_id=None, voice_id=None, photo_id=None, label="hey
             raise Aborted(f"{label} not submitted: job already failed")
         resp = requests.post("https://api.heygen.com/v2/video/generate", headers=HH, json=payload, timeout=NET)
         body = resp.json()
+        if "resolution" in json.dumps(body).lower() and payload["dimension"]["width"] > 1280:
+            print(f"  [{label}] 1080p not allowed on this plan, falling back to 720p")
+            payload["dimension"] = {"width": 1280, "height": 720}
+            resp = requests.post("https://api.heygen.com/v2/video/generate", headers=HH, json=payload, timeout=NET)
+            body = resp.json()
         if not body.get("data") or not body["data"].get("video_id"):
             # RuntimeError, not SystemExit: the worker catches Exception, so one bad
             # HeyGen response fails one job instead of killing the whole worker loop.

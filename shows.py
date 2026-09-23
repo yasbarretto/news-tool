@@ -123,22 +123,22 @@ SHOWS = {
 # Photo-avatar looks from make_anchors.py, keyed by anchor name. Paste its output here.
 # Any anchor listed renders as their generated photo avatar; the rest keep their stand-in.
 PHOTOS = {
-    "Alex Reynolds": "4bb68bc3e9914e379c494ec7d0aaaab4",
-    "Emma Chen": "95b9d6cf68344cd5bc8a7262a3656404",
-    "Victor Marshall": "b437f0d2947a48fc96909b7292c189e8",
-    "Savannah Blake": "3499860cd215432ab585e39d866b48e8",
-    "Chase Harrison": "4a761892b3484f67933b1d8e8705cd66",
-    "Natalie Vale": "bf13fdaa7d6f47469ab35c58e44f805e",
-    "Tyler Brooks": "52fce7ed6d254ab0b76dddc8073e3915",
-    "Kimiko Tan": "5877bf9e7b4e4f9da2e0491468568fa8",
-    "Jack Weston": "215fed08698e49a2b8f87ef986151ac1",
-    "Taylor Brooks": "a08d5b7c1f6d48c1970bbd355bea7769",
-    "Daniel Park": "79c21a39bd1e460882a97fa59c6d5fbd",
-    "Madison Rivers": "a72e367904c74ebabad49c4e690f4ca0",
-    "Marcus Bell": "f63fedc97a774403bea1a8daae93afa3",
-    "Jordan Reese": "33faaa252d884d08b88f77c74f9787de",
-    "Ryan Carter": "6adf655c70f4403daada317da5996b5c",
-    "Sienna Monroe": "27da9a9545fa4bdd8e02e03b1988dd4b",
+    "Emma Chen": "2c1eea03050c427a9775131ff6a986f0",
+    "Alex Reynolds": "59bc0c410bdb43d3a69f02e185117426",
+    "Victor Marshall": "ffda99f37c324ef6ac158ae84752d70e",
+    "Savannah Blake": "973ac7ca63ce46a68d94ad5d97381bce",
+    "Natalie Vale": "68879b0e5e6d4e87bdb8d59c296fdfd0",
+    "Tyler Brooks": "3450e34a96a94b8a82f29df118b707e2",
+    "Kimiko Tan": "a7ab3eb3a1cd487e9e16796006063187",
+    "Jack Weston": "168a9cf27d78444083f3447c6d478165",
+    "Daniel Park": "ebac77ed5a9b4d8387104f30c118abe1",
+    "Madison Rivers": "3eda2b0e623741278922de8f5469cb24",
+    "Marcus Bell": "925e2df4bd8c41aaab90211cff8f0a3f",
+    "Jordan Reese": "b858b598ca084878b5fd7a70440031d5",
+    "Sienna Monroe": "1adf434a0c37461aa7ee1bbe2db7b17d",
+    "Taylor Brooks": "c4135be7465f42688b84ef1ab7df975b",
+    "Ryan Carter": "d33852c37c4d4d7e86198653410c28d3",
+    "Chase Harrison": "a0e5e36f8df24594a0d871b6a04c5fed",
 }
 
 # Composed (not smiling) looks of the SAME anchors, from `make_anchors.py looks`.
