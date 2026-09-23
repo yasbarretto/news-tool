@@ -156,8 +156,9 @@ def _bg():
 # RESUBMITTED (a fresh submission went through in minutes when the first sat 20+ min).
 HEYGEN_TIMEOUT = int(os.environ.get("HEYGEN_ATTEMPT_MIN", "10")) * 60
 HEYGEN_ATTEMPTS = int(os.environ.get("HEYGEN_ATTEMPTS", "2"))
-# Render the clip at the same size as the finished movie. Without "dimension" HeyGen uses
-# its default (720p), which JSON2Video then upscales to 1080 — soft faces and text.
+# Sending "dimension" alongside "aspect_ratio" changed how HeyGen frames a talking photo
+# (video 28 was full-frame without it, cropped with it). Off unless HEYGEN_DIMENSION=on.
+USE_DIMENSION = os.environ.get("HEYGEN_DIMENSION", "off").lower() in ("1", "true", "on", "yes")
 CLIP_W = int(os.environ.get("HEYGEN_WIDTH", "1920"))
 CLIP_H = int(os.environ.get("HEYGEN_HEIGHT", "1080"))
 # Photo-avatar animation controls. We were sending none, so HeyGen chose for us —
@@ -165,8 +166,13 @@ CLIP_H = int(os.environ.get("HEYGEN_HEIGHT", "1080"))
 # back beaming. "default" keeps the face as generated; "stable" keeps movement minimal,
 # which is what a news read wants.
 TP_EXPRESSION = os.environ.get("TALKING_EXPRESSION", "default")     # default | happy
-TP_STYLE = os.environ.get("TALKING_STYLE", "stable")                # stable | expressive
-TP_SUPERRES = os.environ.get("TALKING_SUPERRES", "true").lower() in ("1", "true", "yes")
+TP_STYLE = os.environ.get("TALKING_STYLE", "")                      # stable | expressive; "" = HeyGen default
+TP_SUPERRES = os.environ.get("TALKING_SUPERRES", "off").lower() in ("1", "true", "on", "yes")
+# HeyGen re-frames a talking photo around the face, which crops in against the still.
+# scale < 1 pulls back; offset nudges the framing. 1.0 is HeyGen's default.
+TP_SCALE = os.environ.get("TALKING_SCALE", "")                      # "" = leave it to HeyGen
+TP_OFF_X = os.environ.get("TALKING_OFFSET_X", "")
+TP_OFF_Y = os.environ.get("TALKING_OFFSET_Y", "")
 RENDER_TIMEOUT = int(os.environ.get("RENDER_TIMEOUT_MIN", "30")) * 60
 NET = 30  # seconds: per-request network timeout, so a stalled connection can't hang the worker
 
@@ -227,10 +233,21 @@ def heygen_avatar(text, avatar_id=None, voice_id=None, photo_id=None, label="hey
                 the job requeues and resumes it instead.
     """
     # photo_id = a generated photo-avatar look (talking_photo); otherwise a stock avatar
-    character = ({"type": "talking_photo", "talking_photo_id": photo_id,
-                  "expression": TP_EXPRESSION, "talking_style": TP_STYLE,
-                  "super_resolution": TP_SUPERRES} if photo_id else
-                 {"type": "avatar", "avatar_id": avatar_id or AVATAR_ID, "avatar_style": "normal"})
+    if photo_id:
+        # Baseline = what rendered video 28 correctly: the look, the expression, nothing else.
+        # Everything below is opt-in, because each one changed HeyGen's framing or sharpness.
+        character = {"type": "talking_photo", "talking_photo_id": photo_id,
+                     "expression": TP_EXPRESSION}
+        if TP_STYLE:
+            character["talking_style"] = TP_STYLE
+        if TP_SUPERRES:
+            character["super_resolution"] = True
+        if TP_SCALE:
+            character["scale"] = float(TP_SCALE)
+        if TP_OFF_X or TP_OFF_Y:
+            character["offset"] = {"x": float(TP_OFF_X or 0), "y": float(TP_OFF_Y or 0)}
+    else:
+        character = {"type": "avatar", "avatar_id": avatar_id or AVATAR_ID, "avatar_style": "normal"}
     scene = {
         "character": character,
         "voice": {"type": "text", "input_text": text, "voice_id": voice_id or VOICE_ID},
@@ -238,8 +255,9 @@ def heygen_avatar(text, avatar_id=None, voice_id=None, photo_id=None, label="hey
     bg = _bg()
     if bg:
         scene["background"] = bg
-    payload = {"video_inputs": [scene], "aspect_ratio": "16:9", "test": TEST,
-               "dimension": {"width": CLIP_W, "height": CLIP_H}}
+    payload = {"video_inputs": [scene], "aspect_ratio": "16:9", "test": TEST}
+    if USE_DIMENSION:
+        payload["dimension"] = {"width": CLIP_W, "height": CLIP_H}
 
     if resume_vid:
         print(f"  [{label}] resuming {resume_vid}")
@@ -256,7 +274,7 @@ def heygen_avatar(text, avatar_id=None, voice_id=None, photo_id=None, label="hey
             raise Aborted(f"{label} not submitted: job already failed")
         resp = requests.post("https://api.heygen.com/v2/video/generate", headers=HH, json=payload, timeout=NET)
         body = resp.json()
-        if "resolution" in json.dumps(body).lower() and payload["dimension"]["width"] > 1280:
+        if "resolution" in json.dumps(body).lower() and payload.get("dimension", {}).get("width", 0) > 1280:
             print(f"  [{label}] 1080p not allowed on this plan, falling back to 720p")
             payload["dimension"] = {"width": 1280, "height": 720}
             resp = requests.post("https://api.heygen.com/v2/video/generate", headers=HH, json=payload, timeout=NET)
