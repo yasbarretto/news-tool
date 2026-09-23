@@ -32,6 +32,7 @@ CAPTION_POS = os.environ.get("CAPTION_POS", "custom")   # set to mid-bottom-cent
 CAPTION_X = int(os.environ.get("CAPTION_X", "960"))   # custom x is the CENTER of the line (1920/2)
 CAPTION_Y = int(os.environ.get("CAPTION_Y", "640"))
 WPS = 2.5  # spoken words per second, for estimates
+ANCHOR_ZOOM = float(os.environ.get("ANCHOR_ZOOM", "1.0"))  # 1.08 crops HeyGen side bars if they show; 1.0 = off
 
 
 # ------------------------------------------------------------------ voice preflight
@@ -257,10 +258,22 @@ class _Ticker:
         return els
 
 
+def _anchor_video(url):
+    """Anchor clip, scaled past the canvas edges by ANCHOR_ZOOM.
+
+    HeyGen returns photo-avatar clips with light bars ~2.6% wide on each side (33px of
+    1280). They're pixels in the clip, so resize:"cover" can't remove them; scaling the clip
+    past the frame pushes them off-canvas. Needs >= 1.055; 1.0 turns it off."""
+    if ANCHOR_ZOOM <= 1.0:
+        return {"type": "video", "src": url, "resize": "cover"}
+    w, h = round(1920 * ANCHOR_ZOOM), round(1080 * ANCHOR_ZOOM)
+    return {"type": "video", "src": url, "resize": "cover", "position": "custom",
+            "x": -((w - 1920) // 2), "y": -((h - 1080) // 2), "width": w, "height": h}
+
+
 def _anchor_scene(url, overlays, tick):
     # no extra-time: once the clip ends that tail renders black, which showed as a flash at every cut
-    return {"elements": [{"type": "video", "src": url, "resize": "cover"}]
-            + overlays + tick.for_scene()}
+    return {"elements": [_anchor_video(url)] + overlays + tick.for_scene()}
 
 
 def voice_narration(script, show):
