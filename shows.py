@@ -123,29 +123,52 @@ SHOWS = {
 # Photo-avatar looks from make_anchors.py, keyed by anchor name. Paste its output here.
 # Any anchor listed renders as their generated photo avatar; the rest keep their stand-in.
 PHOTOS = {
-    "Alex Reynolds": "77dcf7cdf53546ebbda279d4c6a8186a",
-    "Emma Chen": "e750ee24c8f54212a42f9624a90981d1",
-    "Victor Marshall": "2cce600e92d64e3e94cbf6da26e37b9c",
-    "Savannah Blake": "3e56cfb968a54711996f0b9d29316f6e",
-    "Chase Harrison": "1f6383f626fd44e588db582855704ae4",
-    "Natalie Vale": "81e59379529f4bc59384a5806efedd69",
-    "Tyler Brooks": "8e4905fd568149258c79c4ab763c9309",
-    "Kimiko Tan": "eedd9cc7b02a436dbfaf90c2bc9ddd86",
-    "Jack Weston": "dd506e7fdf8a45a09ba545eb4a787a2f",
-    "Taylor Brooks": "eb473fd98a774d1695858b9d855b6d35",
-    "Daniel Park": "8b444a307803483bbdd78cd4824e4de2",
-    "Madison Rivers": "2860aad2681a479fa995c3482530c14a",
-    "Marcus Bell": "69ef584ec8254765816b684dc66a1e1c",
-    "Jordan Reese": "d86d463076324104a11cf778021167da",
-    "Ryan Carter": "1e3ad74a3a20492fb828a3e6bf898021",
-    "Sienna Monroe": "3278ef50b0834b9492e69de33e634224",
+    "Alex Reynolds": "4bb68bc3e9914e379c494ec7d0aaaab4",
+    "Emma Chen": "95b9d6cf68344cd5bc8a7262a3656404",
+    "Victor Marshall": "b437f0d2947a48fc96909b7292c189e8",
+    "Savannah Blake": "3499860cd215432ab585e39d866b48e8",
+    "Chase Harrison": "4a761892b3484f67933b1d8e8705cd66",
+    "Natalie Vale": "bf13fdaa7d6f47469ab35c58e44f805e",
+    "Tyler Brooks": "52fce7ed6d254ab0b76dddc8073e3915",
+    "Kimiko Tan": "5877bf9e7b4e4f9da2e0491468568fa8",
+    "Jack Weston": "215fed08698e49a2b8f87ef986151ac1",
+    "Taylor Brooks": "a08d5b7c1f6d48c1970bbd355bea7769",
+    "Daniel Park": "79c21a39bd1e460882a97fa59c6d5fbd",
+    "Madison Rivers": "a72e367904c74ebabad49c4e690f4ca0",
+    "Marcus Bell": "f63fedc97a774403bea1a8daae93afa3",
+    "Jordan Reese": "33faaa252d884d08b88f77c74f9787de",
+    "Ryan Carter": "6adf655c70f4403daada317da5996b5c",
+    "Sienna Monroe": "27da9a9545fa4bdd8e02e03b1988dd4b",
+}
+
+# Composed (not smiling) looks of the SAME anchors, from `make_anchors.py looks`.
+# Used for somber stories. Anchors without one fall back to their warm look.
+PHOTOS_SERIOUS = {
+    "Alex Reynolds": "b5d25140adc74540ab586ff5a1a3633e",
+    "Emma Chen": "8088dab3a6864d80bbe152952f526cb0",
+    "Victor Marshall": "c87d2937cdbe4e9e90ed3493a32c5a78",
+    "Savannah Blake": "2e37ec65c6f74d1b8158f1611ce9c247",
+    "Chase Harrison": "5785a2a455f64117975223cea48908ac",
+    "Natalie Vale": "ecc0e62ca317417da06d29856713a050",
+    "Tyler Brooks": "fac450db24c3460f9362c02dda4e124c",
+    "Kimiko Tan": "a8f664bab8de43bea1ab005d186dbce8",
+    "Jack Weston": "c4c0354d94c1479aba38bfde70f656f4",
+    "Taylor Brooks": "0d16f3556e2949809bde135d84f01a7f",
+    "Daniel Park": "bed92d59522a430d8520cd8706c1a6f4",
+    "Madison Rivers": "22a7a7bc244144e193cf488d481e9072",
+    "Marcus Bell": "2a153cef93f24192b986ef3e0dd97dc7",
+    "Jordan Reese": "f57c3623f7494c74b61bdd81e997d5ca",
+    "Ryan Carter": "0f94de2b8c4d409792e8c131a9cf73bb",
+    "Sienna Monroe": "3db99cbb197a40ae832cb695f98315a9",
 }
 
 for _show in SHOWS.values():
     for _side in ("a", "b"):
-        _pid = PHOTOS.get(_show[_side]["name"])
-        if _pid:
-            _show[_side]["photo"] = _pid
+        _name = _show[_side]["name"]
+        if PHOTOS.get(_name):
+            _show[_side]["photo"] = PHOTOS[_name]
+        if PHOTOS_SERIOUS.get(_name):
+            _show[_side]["photo_serious"] = PHOTOS_SERIOUS[_name]
 
 
 def get_show(key):

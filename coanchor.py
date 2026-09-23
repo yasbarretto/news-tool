@@ -81,6 +81,7 @@ Return ONLY valid JSON (no markdown) in exactly this shape:
     {{
       "anchor": "a",
       "category": "<ONE word desk label, e.g. TECH, MARKETS, WORLD, SPORTS, POLITICS>",
+      "tone": "<somber if the story involves death, tragedy, disaster, violence, serious illness or loss; otherwise neutral>",
       "headline": "<chyron: 3 to 5 words, under 28 characters>",
       "lead": "<the anchor ON CAMERA introducing the story: ONE sentence>",
       "narration": "<voiceover over b-roll: 1 to 3 sentences with the facts>",
@@ -101,7 +102,8 @@ Rules:
 - broll_prompts: one per roughly 4 to 5 seconds of narration. Each must depict THIS story's actual subject. Anonymous people are fine. NO real named people, NO logos or readable text, NO violent or politically charged scenes.
 - Spell company and product names exactly as the company does ("OpenAI" the company is not "open AI").
 - Spell out numbers and tickers as spoken ("a hundred and thirty-five dollars").
-- Broadcast tone: confident, warm, tight. No filler."""
+- Broadcast tone: confident, warm, tight. No filler.
+- A somber story is read plainly and respectfully. No wordplay, no upbeat phrasing, and the anchor does not thank or hand off cheerfully around it."""
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
     msg = client.messages.create(model="claude-sonnet-4-6", max_tokens=3000,
                                  messages=[{"role": "user", "content": prompt}])
@@ -115,6 +117,8 @@ def normalize(script):
     for i, st in enumerate(script.get("stories", [])):
         st["anchor"] = "a" if i % 2 == 0 else "b"
         st.setdefault("category", "News")
+        if st.get("tone") not in ("somber", "neutral"):
+            st["tone"] = "neutral"
     script.setdefault("open", {}).setdefault("a", "")
     script["open"].setdefault("b", "")
     script.setdefault("close", {}).setdefault("a", "")
@@ -129,12 +133,24 @@ def is_coanchor(script):
 
 # ------------------------------------------------------------------ render
 def _lines(script):
-    """Every on-camera line, in running order: (key, anchor, text)."""
-    out = [("open_a", "a", script["open"]["a"]), ("open_b", "b", script["open"]["b"])]
+    """Every on-camera line, in running order: (key, anchor, text, serious).
+
+    `serious` picks the anchor's composed look instead of their warm one: on a somber
+    story's lead, and across the whole episode when it contains one (nobody opens a
+    bulletin beaming when someone has died)."""
+    somber_episode = any(st.get("tone") == "somber" for st in script.get("stories", []))
+    out = [("open_a", "a", script["open"]["a"], somber_episode),
+           ("open_b", "b", script["open"]["b"], somber_episode)]
     for i, st in enumerate(script["stories"]):
-        out.append((f"lead_{i}", st["anchor"], st["lead"]))
-    out += [("close_a", "a", script["close"]["a"]), ("close_b", "b", script["close"]["b"])]
+        out.append((f"lead_{i}", st["anchor"], st["lead"], st.get("tone") == "somber"))
+    out += [("close_a", "a", script["close"]["a"], somber_episode),
+            ("close_b", "b", script["close"]["b"], somber_episode)]
     return [x for x in out if (x[2] or "").strip()]
+
+
+def look_for(anc, serious):
+    """The photo-avatar look to use. Falls back to the warm look if no composed one exists."""
+    return (anc.get("photo_serious") or anc.get("photo")) if serious else anc.get("photo")
 
 
 def public(script):
@@ -143,9 +159,9 @@ def public(script):
     return {k: v for k, v in script.items() if not str(k).startswith("_")}
 
 
-def _sig(text, anc):
-    """Identity of a clip: same words, same face, same voice = same clip."""
-    raw = "|".join([str(text), str(anc.get("avatar")), str(anc.get("photo")), str(anc.get("voice"))])
+def _sig(text, anc, photo=None):
+    """Identity of a clip: same words, same face (and expression), same voice = same clip."""
+    raw = "|".join([str(text), str(anc.get("avatar")), str(photo), str(anc.get("voice"))])
     return hashlib.sha1(raw.encode()).hexdigest()[:16]
 
 
@@ -173,11 +189,12 @@ def render_clips(script, show, ledger=None, save=None):
                 save()
 
     def one(item):
-        key, who, text = item
+        key, who, text, serious = item
         if abort.is_set():                  # job already lost: don't submit (don't pay)
             raise Aborted(f"clip {key} skipped: job already failed")
         anc = show[who]
-        sig = _sig(text, anc)
+        photo = look_for(anc, serious)
+        sig = _sig(text, anc, photo)
         prev = ledger.get(key) or {}
         fresh_enough = (time.time() - prev.get("at", 0)) < RESUME_MAX_MIN * 60
         resume = prev.get("vid") if prev.get("sig") == sig and (prev.get("done") or fresh_enough) else None
@@ -185,8 +202,8 @@ def render_clips(script, show, ledger=None, save=None):
         def on_submit(vid):
             record(key, sig=sig, vid=vid, at=time.time(), done=False)
 
-        url = heygen_avatar(text, anc["avatar"], anc["voice"], anc.get("photo"),
-                            label=f"clip {key} · {anc['name']}", abort=abort,
+        url = heygen_avatar(text, anc["avatar"], anc["voice"], photo,
+                            label=f"clip {key} · {anc['name']}" + (" · composed" if serious else ""), abort=abort,
                             resume_vid=resume, on_submit=on_submit)
         return key, url
 
@@ -209,7 +226,7 @@ def render_clips(script, show, ledger=None, save=None):
 
 
 def spoken_words(script):
-    return sum(len(str(t).split()) for _, _, t in _lines(script))
+    return sum(len(str(t).split()) for _, _, t, _ in _lines(script))
 
 
 # ------------------------------------------------------------------ assemble
@@ -272,7 +289,7 @@ def preflight_movie(script, show, ticker_items):
     """Build the full movie with placeholder clips and audio, and validate it BEFORE any
     paid render. Graphics size doesn't depend on the clip URLs, so this catches payload
     problems (like an oversized ticker) for free."""
-    fake_clips = {k: "https://preflight/clip.mp4" for k, _, _ in _lines(script)}
+    fake_clips = {line[0]: "https://preflight/clip.mp4" for line in _lines(script)}
     fake_narr = [("https://preflight/audio.mp3", 8.0) for _ in script["stories"]]
     movie, _, _ = build_coanchor_movie(script, show, fake_clips, ticker_items, fake_narr, _check=False)
     g.check_sizes(movie)

@@ -88,13 +88,14 @@ def live_bar(show_title):
     return _el(body, 820, 60, 58, 44, z=20)
 
 
-def clean_headline(t, limit=60):
+def clean_headline(t, limit=100):
     """Google News titles end in ' - Publisher'. Drop it, and keep ticker items short."""
     import re
     t = str(t or "").strip()
     if " - " in t:
         t = t.rsplit(" - ", 1)[0].strip()
     t = re.sub(r"^(news|breaking|update|watch|live)\s*:\s*", "", t, flags=re.I)  # "News : Update to..."
+    # ~1600px of bar at 33px Barlow Condensed fits roughly 100 caps characters
     return t if len(t) <= limit else t[:limit - 1].rstrip() + "…"
 
 
