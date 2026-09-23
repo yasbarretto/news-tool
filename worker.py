@@ -16,7 +16,7 @@ from datetime import datetime, timezone, timedelta
 import db
 from qa import run_auto_qa
 from publisher import run_publishing, run_previews
-from shows import get_show, PHOTOS
+from shows import get_show
 import coanchor
 from phase3_pipeline import WaitTimeout
 from phase3_pipeline import (
@@ -25,7 +25,7 @@ from phase3_pipeline import (
 
 POLL_SECONDS = 15
 # A slow clip requeues the job (resuming its clips) up to this many times before failing.
-JOB_RETRIES = int(os.environ.get("JOB_RETRIES", "5"))
+JOB_RETRIES = int(os.environ.get("JOB_RETRIES", "3"))
 
 
 def process(job_id, num_stories):
@@ -196,11 +196,6 @@ def maybe_enqueue(s):
 
 def main():
     print("News69 worker up. polling every", POLL_SECONDS, "s")
-    # Which anchor photos this deploy uses. Base photos (sharp, full-width) start 95b9d6cf;
-    # anything else means an old shows.py is deployed.
-    emma = PHOTOS.get("Emma Chen", "")
-    print(f"[anchors] Emma Chen photo {emma} ->",
-          "BASE photos (video 28)" if emma.startswith("95b9d6cf") else "NOT the base photos, redeploy shows.py")
     try:
         jobs, prev = db.recover_stuck()
         if jobs:

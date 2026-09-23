@@ -21,8 +21,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import anthropic
 
 import graphics as g
-from phase3_pipeline import (ANTHROPIC_API_KEY, heygen_submit, heygen_await, heygen_tts,
-                             Aborted, WaitTimeout)
+from phase3_pipeline import ANTHROPIC_API_KEY, heygen_avatar, heygen_tts, Aborted
 
 CONCURRENCY = int(os.environ.get("HEYGEN_CONCURRENCY", "3"))
 # A recorded clip older than this is presumed dead at HeyGen and submitted fresh.
@@ -33,9 +32,6 @@ CAPTION_POS = os.environ.get("CAPTION_POS", "custom")   # set to mid-bottom-cent
 CAPTION_X = int(os.environ.get("CAPTION_X", "960"))   # custom x is the CENTER of the line (1920/2)
 CAPTION_Y = int(os.environ.get("CAPTION_Y", "640"))
 WPS = 2.5  # spoken words per second, for estimates
-# Scale composed-look clips past the frame to crop HeyGen's side padding (~50px each side
-# at 1080p needs >= 1.055). Base-photo clips are ~16:9 and never zoomed. 1.0 = off.
-ANCHOR_ZOOM = float(os.environ.get("ANCHOR_ZOOM", "1.07"))
 
 
 # ------------------------------------------------------------------ voice preflight
@@ -170,19 +166,16 @@ def _sig(text, anc, photo=None):
 
 
 def render_clips(script, show, ledger=None, save=None):
-    """Render all on-camera lines. Returns {key: video_url}.
-
-    Two phases, so one slow clip never holds up the others:
-      1. SUBMIT every clip to HeyGen up front (or pick up its id from an earlier attempt).
-      2. WAIT on all of them at once.
-    HeyGen takes anywhere from 2 to 20+ minutes per clip. Submitting in waits of
-    HEYGEN_CONCURRENCY meant the last clips weren't even sent until the first ones finished.
+    """Render all on-camera lines in parallel. Returns {key: video_url}.
 
     ledger (dict, persisted with the job via save()) records every clip's HeyGen video id
     the moment it's submitted. On a retry of the same job:
       - a clip whose words/face/voice are unchanged is RESUMED by its id: finished clips
         come straight back, running ones keep going. Nothing is paid for twice.
       - anything changed, never submitted, or older than RESUME_MAX_MIN is submitted fresh.
+
+    Fails fast: as soon as one clip gives up, clips not yet submitted are cancelled and
+    in-flight waits stop. Their ids are already in the ledger, so the next attempt resumes them.
     """
     lines = _lines(script)
     ledger = ledger if ledger is not None else {}
@@ -195,67 +188,41 @@ def render_clips(script, show, ledger=None, save=None):
             if save:
                 save()
 
-    def spec(item):
-        key, who, text, serious = item
-        anc = show[who]
-        photo = look_for(anc, serious)
-        label = f"clip {key} · {anc['name']}" + (" · composed" if serious else "")
-        return anc, photo, _sig(text, anc, photo), label
-
-    def submit(item):
+    def one(item):
         key, who, text, serious = item
         if abort.is_set():                  # job already lost: don't submit (don't pay)
             raise Aborted(f"clip {key} skipped: job already failed")
-        anc, photo, sig, label = spec(item)
-        vid = heygen_submit(text, anc["avatar"], anc["voice"], photo, label=label)
-        record(key, sig=sig, vid=vid, at=time.time(), done=False)
-        return vid
-
-    def start(item):
-        """Phase 1: an id to wait on, and whether it came from an earlier attempt."""
-        key = item[0]
-        _, _, sig, label = spec(item)
+        anc = show[who]
+        photo = look_for(anc, serious)
+        sig = _sig(text, anc, photo)
         prev = ledger.get(key) or {}
         fresh_enough = (time.time() - prev.get("at", 0)) < RESUME_MAX_MIN * 60
-        if prev.get("vid") and prev.get("sig") == sig and (prev.get("done") or fresh_enough):
-            print(f"  [{label}] resuming {prev['vid']}")
-            return item, prev["vid"], True
-        return item, submit(item), False
+        resume = prev.get("vid") if prev.get("sig") == sig and (prev.get("done") or fresh_enough) else None
 
-    def finish(item, vid, resumed):
-        """Phase 2: wait. A resumed clip that failed at HeyGen gets one fresh submission."""
-        key = item[0]
-        _, _, _, label = spec(item)
-        try:
-            url = heygen_await(vid, label, abort)
-            record(key, done=True)          # recorded now, not at the end: a requeue keeps it
-            return key, url
-        except (WaitTimeout, Aborted):
-            raise                           # still running: the job requeues and resumes it
-        except RuntimeError as e:
-            if not resumed:
-                raise
-            print(f"  [{label}] earlier submission failed, submitting fresh: {str(e)[:120]}")
-            url = heygen_await(submit(item), label, abort)
+        def on_submit(vid):
+            record(key, sig=sig, vid=vid, at=time.time(), done=False)
+
+        url = heygen_avatar(text, anc["avatar"], anc["voice"], photo,
+                            label=f"clip {key} · {anc['name']}" + (" · composed" if serious else ""), abort=abort,
+                            resume_vid=resume, on_submit=on_submit)
+        return key, url
+
+    pool = ThreadPoolExecutor(max_workers=CONCURRENCY)
+    futures = [pool.submit(one, x) for x in lines]
+    clips = {}
+    try:
+        for f in as_completed(futures):
+            key, url = f.result()           # raises if that clip failed
+            clips[key] = url
             record(key, done=True)
-            return key, url
-
-    def run(pool_size, fn, args):
-        pool = ThreadPoolExecutor(max_workers=pool_size)
-        futures = [pool.submit(fn, *a) for a in args]
-        out = []
-        try:
-            for f in as_completed(futures):
-                out.append(f.result())      # raises if that one failed
-        except Exception:
-            abort.set()                     # stop in-flight waits
-            pool.shutdown(wait=True, cancel_futures=True)
-            raise
-        pool.shutdown(wait=True)
-        return out
-
-    started = run(CONCURRENCY, start, [(x,) for x in lines])
-    return dict(run(max(1, len(started)), finish, started))
+    except Exception:
+        abort.set()                          # stop in-flight waits
+        for f in futures:
+            f.cancel()                       # drop clips not yet submitted
+        pool.shutdown(wait=True, cancel_futures=True)
+        raise
+    pool.shutdown(wait=True)
+    return clips
 
 
 def spoken_words(script):
@@ -290,22 +257,10 @@ class _Ticker:
         return els
 
 
-def _anchor_video(url, padded=False):
-    """Anchor clip. `padded` clips are scaled past the canvas edges by ANCHOR_ZOOM.
-
-    Composed looks are 1024x608 (1.68:1), so HeyGen pads the talking photo with ~50px light
-    bars left and right. The bars are pixels in the clip, so resize:"cover" can't remove
-    them; scaling the clip past the frame pushes them off-canvas."""
-    if not padded or ANCHOR_ZOOM <= 1.0:
-        return {"type": "video", "src": url, "resize": "cover"}
-    w, h = round(1920 * ANCHOR_ZOOM), round(1080 * ANCHOR_ZOOM)
-    return {"type": "video", "src": url, "resize": "cover", "position": "custom",
-            "x": -((w - 1920) // 2), "y": -((h - 1080) // 2), "width": w, "height": h}
-
-
-def _anchor_scene(url, overlays, tick, padded=False):
+def _anchor_scene(url, overlays, tick):
     # no extra-time: once the clip ends that tail renders black, which showed as a flash at every cut
-    return {"elements": [_anchor_video(url, padded)] + overlays + tick.for_scene()}
+    return {"elements": [{"type": "video", "src": url, "resize": "cover"}]
+            + overlays + tick.for_scene()}
 
 
 def voice_narration(script, show):
@@ -344,17 +299,12 @@ def build_coanchor_movie(script, show, clips, ticker_items, narration, _check=Tr
     scenes, seen = [], set()
     narration_secs, n_images = 0.0, 0
     tick = _Ticker(ticker_items)
-    # clips rendered from a composed look (1024x608, side-padded by HeyGen)
-    padded = {key for key, who, _, serious in _lines(script)
-              if serious and show[who].get("photo_serious")}
 
     if "open_a" in clips:
         scenes.append(_anchor_scene(clips["open_a"],
-                                    [g.title_card(show["title"], show["a"]["name"], show["b"]["name"])], tick,
-                                    "open_a" in padded))
+                                    [g.title_card(show["title"], show["a"]["name"], show["b"]["name"])], tick))
     if "open_b" in clips:
-        scenes.append(_anchor_scene(clips["open_b"], [g.lower_third(show["b"]["name"])], tick,
-                                    "open_b" in padded))
+        scenes.append(_anchor_scene(clips["open_b"], [g.lower_third(show["b"]["name"])], tick))
         seen.add("b")
 
     for i, st in enumerate(script["stories"]):
@@ -363,17 +313,16 @@ def build_coanchor_movie(script, show, clips, ticker_items, narration, _check=Tr
         if key in clips:
             ov = [] if who in seen else [g.lower_third(show[who]["name"])]
             seen.add(who)
-            scenes.append(_anchor_scene(clips[key], ov, tick, key in padded))
+            scenes.append(_anchor_scene(clips[key], ov, tick))
         sc, dur, n = _broll_scene(st, narration[i], tick)
         scenes.append(sc)
         narration_secs += dur
         n_images += n
 
     if "close_a" in clips:
-        scenes.append(_anchor_scene(clips["close_a"], [], tick, "close_a" in padded))
+        scenes.append(_anchor_scene(clips["close_a"], [], tick))
     if "close_b" in clips:
-        scenes.append(_anchor_scene(clips["close_b"], [g.sign_off(show["tagline"])], tick,
-                                    "close_b" in padded))
+        scenes.append(_anchor_scene(clips["close_b"], [g.sign_off(show["tagline"])], tick))
 
     caption = {"style": "classic", "max-words-per-line": 4, "position": CAPTION_POS,
                "font-family": "Barlow Condensed", "font-weight": "700", "font-size": 76,
