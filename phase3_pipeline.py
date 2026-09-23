@@ -222,16 +222,12 @@ def _heygen_await(vid, label, abort=None):
     return d["video_url"]   # status calls return a FRESH presigned url, so resuming never serves an expired one
 
 
-def heygen_avatar(text, avatar_id=None, voice_id=None, photo_id=None, label="heygen", abort=None,
-                  resume_vid=None, on_submit=None):
-    """Render one avatar clip.
+def heygen_await(vid, label="heygen", abort=None):
+    """Wait for an already-submitted clip. Returns a fresh video url."""
+    return _heygen_await(vid, label, abort)
 
-    resume_vid: a clip already submitted (and paid for) by an earlier attempt of this job.
-                We pick it back up instead of submitting a duplicate.
-    on_submit:  called with the new video id the moment it's submitted, so the job can
-                record it before waiting. With it, a slow clip is never resubmitted here;
-                the job requeues and resumes it instead.
-    """
+
+def _heygen_payload(text, avatar_id=None, voice_id=None, photo_id=None):
     # photo_id = a generated photo-avatar look (talking_photo); otherwise a stock avatar
     if photo_id:
         # Baseline = what rendered video 28 correctly: the look, the expression, nothing else.
@@ -258,6 +254,43 @@ def heygen_avatar(text, avatar_id=None, voice_id=None, photo_id=None, label="hey
     payload = {"video_inputs": [scene], "aspect_ratio": "16:9", "test": TEST}
     if USE_DIMENSION:
         payload["dimension"] = {"width": CLIP_W, "height": CLIP_H}
+    return payload
+
+
+def _heygen_post(payload, label):
+    """Submit one clip. Returns its video id; raises RuntimeError on a rejected request."""
+    resp = requests.post("https://api.heygen.com/v2/video/generate", headers=HH, json=payload, timeout=NET)
+    body = resp.json()
+    if "resolution" in json.dumps(body).lower() and payload.get("dimension", {}).get("width", 0) > 1280:
+        print(f"  [{label}] 1080p not allowed on this plan, falling back to 720p")
+        payload["dimension"] = {"width": 1280, "height": 720}
+        resp = requests.post("https://api.heygen.com/v2/video/generate", headers=HH, json=payload, timeout=NET)
+        body = resp.json()
+    if not body.get("data") or not body["data"].get("video_id"):
+        # RuntimeError, not SystemExit: the worker catches Exception, so one bad
+        # HeyGen response fails one job instead of killing the whole worker loop.
+        raise RuntimeError(f"[heygen error] HTTP {resp.status_code}: {json.dumps(body)[:600]}")
+    return body["data"]["video_id"]
+
+
+def heygen_submit(text, avatar_id=None, voice_id=None, photo_id=None, label="heygen"):
+    """Submit one clip without waiting for it. Returns its HeyGen video id."""
+    vid = _heygen_post(_heygen_payload(text, avatar_id, voice_id, photo_id), label)
+    print(f"  [{label}] submitted {vid}")
+    return vid
+
+
+def heygen_avatar(text, avatar_id=None, voice_id=None, photo_id=None, label="heygen", abort=None,
+                  resume_vid=None, on_submit=None):
+    """Render one avatar clip.
+
+    resume_vid: a clip already submitted (and paid for) by an earlier attempt of this job.
+                We pick it back up instead of submitting a duplicate.
+    on_submit:  called with the new video id the moment it's submitted, so the job can
+                record it before waiting. With it, a slow clip is never resubmitted here;
+                the job requeues and resumes it instead.
+    """
+    payload = _heygen_payload(text, avatar_id, voice_id, photo_id)
 
     if resume_vid:
         print(f"  [{label}] resuming {resume_vid}")
@@ -272,18 +305,7 @@ def heygen_avatar(text, avatar_id=None, voice_id=None, photo_id=None, label="hey
     for attempt in range(1, attempts + 1):
         if abort is not None and abort.is_set():  # never submit (and pay) for a lost job
             raise Aborted(f"{label} not submitted: job already failed")
-        resp = requests.post("https://api.heygen.com/v2/video/generate", headers=HH, json=payload, timeout=NET)
-        body = resp.json()
-        if "resolution" in json.dumps(body).lower() and payload.get("dimension", {}).get("width", 0) > 1280:
-            print(f"  [{label}] 1080p not allowed on this plan, falling back to 720p")
-            payload["dimension"] = {"width": 1280, "height": 720}
-            resp = requests.post("https://api.heygen.com/v2/video/generate", headers=HH, json=payload, timeout=NET)
-            body = resp.json()
-        if not body.get("data") or not body["data"].get("video_id"):
-            # RuntimeError, not SystemExit: the worker catches Exception, so one bad
-            # HeyGen response fails one job instead of killing the whole worker loop.
-            raise RuntimeError(f"[heygen error] HTTP {resp.status_code}: {json.dumps(body)[:600]}")
-        vid = body["data"]["video_id"]
+        vid = _heygen_post(payload, label)
         print(f"  [{label}] submitted {vid}" + (f" (attempt {attempt})" if attempt > 1 else ""))
         if on_submit:
             on_submit(vid)

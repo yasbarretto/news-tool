@@ -21,7 +21,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import anthropic
 
 import graphics as g
-from phase3_pipeline import ANTHROPIC_API_KEY, heygen_avatar, heygen_tts, Aborted
+from phase3_pipeline import (ANTHROPIC_API_KEY, heygen_submit, heygen_await, heygen_tts,
+                             Aborted, WaitTimeout)
 
 CONCURRENCY = int(os.environ.get("HEYGEN_CONCURRENCY", "3"))
 # A recorded clip older than this is presumed dead at HeyGen and submitted fresh.
@@ -169,16 +170,19 @@ def _sig(text, anc, photo=None):
 
 
 def render_clips(script, show, ledger=None, save=None):
-    """Render all on-camera lines in parallel. Returns {key: video_url}.
+    """Render all on-camera lines. Returns {key: video_url}.
+
+    Two phases, so one slow clip never holds up the others:
+      1. SUBMIT every clip to HeyGen up front (or pick up its id from an earlier attempt).
+      2. WAIT on all of them at once.
+    HeyGen takes anywhere from 2 to 20+ minutes per clip. Submitting in waits of
+    HEYGEN_CONCURRENCY meant the last clips weren't even sent until the first ones finished.
 
     ledger (dict, persisted with the job via save()) records every clip's HeyGen video id
     the moment it's submitted. On a retry of the same job:
       - a clip whose words/face/voice are unchanged is RESUMED by its id: finished clips
         come straight back, running ones keep going. Nothing is paid for twice.
       - anything changed, never submitted, or older than RESUME_MAX_MIN is submitted fresh.
-
-    Fails fast: as soon as one clip gives up, clips not yet submitted are cancelled and
-    in-flight waits stop. Their ids are already in the ledger, so the next attempt resumes them.
     """
     lines = _lines(script)
     ledger = ledger if ledger is not None else {}
@@ -191,41 +195,67 @@ def render_clips(script, show, ledger=None, save=None):
             if save:
                 save()
 
-    def one(item):
+    def spec(item):
+        key, who, text, serious = item
+        anc = show[who]
+        photo = look_for(anc, serious)
+        label = f"clip {key} · {anc['name']}" + (" · composed" if serious else "")
+        return anc, photo, _sig(text, anc, photo), label
+
+    def submit(item):
         key, who, text, serious = item
         if abort.is_set():                  # job already lost: don't submit (don't pay)
             raise Aborted(f"clip {key} skipped: job already failed")
-        anc = show[who]
-        photo = look_for(anc, serious)
-        sig = _sig(text, anc, photo)
+        anc, photo, sig, label = spec(item)
+        vid = heygen_submit(text, anc["avatar"], anc["voice"], photo, label=label)
+        record(key, sig=sig, vid=vid, at=time.time(), done=False)
+        return vid
+
+    def start(item):
+        """Phase 1: an id to wait on, and whether it came from an earlier attempt."""
+        key = item[0]
+        _, _, sig, label = spec(item)
         prev = ledger.get(key) or {}
         fresh_enough = (time.time() - prev.get("at", 0)) < RESUME_MAX_MIN * 60
-        resume = prev.get("vid") if prev.get("sig") == sig and (prev.get("done") or fresh_enough) else None
+        if prev.get("vid") and prev.get("sig") == sig and (prev.get("done") or fresh_enough):
+            print(f"  [{label}] resuming {prev['vid']}")
+            return item, prev["vid"], True
+        return item, submit(item), False
 
-        def on_submit(vid):
-            record(key, sig=sig, vid=vid, at=time.time(), done=False)
-
-        url = heygen_avatar(text, anc["avatar"], anc["voice"], photo,
-                            label=f"clip {key} · {anc['name']}" + (" · composed" if serious else ""), abort=abort,
-                            resume_vid=resume, on_submit=on_submit)
-        return key, url
-
-    pool = ThreadPoolExecutor(max_workers=CONCURRENCY)
-    futures = [pool.submit(one, x) for x in lines]
-    clips = {}
-    try:
-        for f in as_completed(futures):
-            key, url = f.result()           # raises if that clip failed
-            clips[key] = url
+    def finish(item, vid, resumed):
+        """Phase 2: wait. A resumed clip that failed at HeyGen gets one fresh submission."""
+        key = item[0]
+        _, _, _, label = spec(item)
+        try:
+            url = heygen_await(vid, label, abort)
+            record(key, done=True)          # recorded now, not at the end: a requeue keeps it
+            return key, url
+        except (WaitTimeout, Aborted):
+            raise                           # still running: the job requeues and resumes it
+        except RuntimeError as e:
+            if not resumed:
+                raise
+            print(f"  [{label}] earlier submission failed, submitting fresh: {str(e)[:120]}")
+            url = heygen_await(submit(item), label, abort)
             record(key, done=True)
-    except Exception:
-        abort.set()                          # stop in-flight waits
-        for f in futures:
-            f.cancel()                       # drop clips not yet submitted
-        pool.shutdown(wait=True, cancel_futures=True)
-        raise
-    pool.shutdown(wait=True)
-    return clips
+            return key, url
+
+    def run(pool_size, fn, args):
+        pool = ThreadPoolExecutor(max_workers=pool_size)
+        futures = [pool.submit(fn, *a) for a in args]
+        out = []
+        try:
+            for f in as_completed(futures):
+                out.append(f.result())      # raises if that one failed
+        except Exception:
+            abort.set()                     # stop in-flight waits
+            pool.shutdown(wait=True, cancel_futures=True)
+            raise
+        pool.shutdown(wait=True)
+        return out
+
+    started = run(CONCURRENCY, start, [(x,) for x in lines])
+    return dict(run(max(1, len(started)), finish, started))
 
 
 def spoken_words(script):
