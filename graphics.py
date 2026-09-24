@@ -114,13 +114,67 @@ def clean_headline(t, limit=100):
 
 def ticker_band(label="69 Now"):
     """Ticker background + label. Static, repeated in every scene: identical pixels,
-    so the hard cuts between scenes are invisible."""
-    body = (
-        f'<div style="position:absolute;inset:0;display:flex;background:{DEEP};border-top:5px solid {RED}">'
-        f'<span style="background:{RED};color:{WHITE};font:900 italic 33px/1 {FONT};padding:0 25px;'
-        f'display:flex;align-items:center;text-transform:uppercase">{esc(label)}</span></div>'
-    )
+    so the hard cuts between scenes are invisible. label=None: the bar only (the crawl
+    puts its label on a separate layer above the moving text)."""
+    tag = (f'<span style="background:{RED};color:{WHITE};font:900 italic 33px/1 {FONT};padding:0 25px;'
+           f'display:flex;align-items:center;text-transform:uppercase">{esc(label)}</span>') if label else ""
+    body = (f'<div style="position:absolute;inset:0;display:flex;background:{DEEP};border-top:5px solid {RED}">'
+            f'{tag}</div>')
     return _el(body, 1920, 97, 0, 983, z=30)
+
+
+# ---------------------------------------------------------------- crawl ticker
+# Continuous right-to-left crawl, moved by JSON2Video keyframes (the renderer moves it, so
+# no CSS animation and no jitter). One loop of the day's headlines is repeated as separate
+# copies back to back, each making ONE linear pass, so there is never a jump to hide.
+# Tested in ticker_test.py: smooth, and it runs straight through the scene crossfades.
+CRAWL_SPEED = float(os.environ.get("TICKER_SPEED", "110"))   # pixels per second
+_CRAWL_LEFT, _CRAWL_Y, _CRAWL_H = 230, 988, 92                # text box, right of the label
+_SEP = 11 + 56                                                # diamond + its margins
+
+
+def _text_px(text):
+    """Width of uppercase text at 33px Barlow Condensed 600. Calibrated in a browser against
+    the real font (normal headlines ~14px a letter); slightly generous so text is never cut."""
+    w = 0
+    for ch in text.upper():
+        w += 23 if ch in "MW" else 8 if ch in " I.,'’:;!|1-" else 15.5
+    return w
+
+
+def ticker_crawl(headlines, total_secs, speed=None, label="69 Now"):
+    """Movie-level crawl ticker for a whole episode: band, moving copies of the headline
+    loop, and the label on top so text slides out from behind it.
+
+    total_secs must be the episode's real length: nothing here may end after it, or
+    JSON2Video stretches the video to fit (a 75s test came out 150s long)."""
+    speed = speed or CRAWL_SPEED
+    items = [esc(clean_headline(h).upper()) for h in headlines if h] or ["NEWS CHANNEL 69"]
+    diamond = (f'<i style="width:11px;height:11px;background:{RED};transform:rotate(45deg);'
+               'display:inline-block;flex-shrink:0;margin:0 28px"></i>')
+    body = (f'<div style="position:absolute;inset:0;display:flex;align-items:center;'
+            f'font:600 33px/1 {FONT};color:{WHITE};letter-spacing:.6px;white-space:nowrap">'
+            + "".join(diamond + t for t in items) + '</div>')
+    # 1% over: measured in a render, the estimate itself already runs ~1% wide. More margin
+    # shows up as an extra gap where one copy of the loop hands over to the next.
+    loop_w = int((sum(_text_px(clean_headline(h)) for h in headlines if h) + _SEP * len(items)) * 1.01) or 1000
+    travel = 1920 - (_CRAWL_LEFT - loop_w)                      # enter at the right edge, exit behind the label
+    per_copy = loop_w / speed                                   # a new copy enters every per_copy seconds
+    els = [ticker_band(label=None)]
+    k = 0
+    while k * per_copy < total_secs - 0.05:
+        start = round(k * per_copy, 3)
+        dur = round(min(travel / speed, total_secs - start), 3)      # the last copy stops at the end
+        el = _el(body, loop_w, _CRAWL_H, 1920, _CRAWL_Y, duration=dur, start=start, z=31)
+        el["keyframes"] = [{"time": 0, "x": 1920},
+                           {"time": dur, "x": round(1920 - speed * dur, 1), "easing": "linear"}]
+        els.append(el)
+        k += 1
+    tag = (f'<span style="position:absolute;left:0;top:0;bottom:0;display:flex;align-items:center;'
+           f'background:{RED};color:{WHITE};font:900 italic 33px/1 {FONT};padding:0 25px;'
+           f'text-transform:uppercase">{esc(label)}</span>')
+    els.append(_el(tag, _CRAWL_LEFT, _CRAWL_H, 0, _CRAWL_Y, z=32))
+    return els
 
 
 def ticker_item(headline, start=0, duration=-2):

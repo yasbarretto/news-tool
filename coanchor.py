@@ -22,7 +22,7 @@ import anthropic
 
 import graphics as g
 from phase3_pipeline import (ANTHROPIC_API_KEY, heygen_submit, heygen_await, heygen_tts,
-                             Aborted, WaitTimeout, HEYGEN_ENGINE, TTSUnavailable)
+                             Aborted, WaitTimeout, HEYGEN_ENGINE, TTSUnavailable, clip_seconds)
 
 CONCURRENCY = int(os.environ.get("HEYGEN_CONCURRENCY", "3"))
 # A recorded clip older than this is presumed dead at HeyGen and submitted fresh.
@@ -33,6 +33,9 @@ CAPTION_POS = os.environ.get("CAPTION_POS", "custom")   # set to mid-bottom-cent
 CAPTION_X = int(os.environ.get("CAPTION_X", "960"))   # custom x is the CENTER of the line (1920/2)
 CAPTION_Y = int(os.environ.get("CAPTION_Y", "640"))
 WPS = 2.5  # spoken words per second, for estimates
+# "crawl" = continuous scrolling ticker across the whole episode (graphics.ticker_crawl);
+# "flip" = the old one-headline-at-a-time fade, per scene.
+TICKER = os.environ.get("TICKER", "crawl").strip().lower()
 ANCHOR_ZOOM = float(os.environ.get("ANCHOR_ZOOM", "1.0"))  # 1.08 crops HeyGen side bars if they show; 1.0 = off
 
 
@@ -364,7 +367,8 @@ def _anchor_video(url):
 
 def _anchor_scene(url, overlays, tick):
     # no extra-time: once the clip ends that tail renders black, which showed as a flash at every cut
-    return {"elements": [_anchor_video(url)] + overlays + tick.for_scene()}
+    # tick=None: the crawl ticker runs at movie level instead of per scene
+    return {"elements": [_anchor_video(url)] + overlays + (tick.for_scene() if tick else [])}
 
 
 def voice_narration(script, show):
@@ -399,10 +403,23 @@ def preflight_movie(script, show, ticker_items):
     g.check_sizes(movie)
 
 
+def episode_seconds(script, clips, scenes):
+    """The finished episode's length: anchor clips as HeyGen measured them (estimated from
+    the words only when HeyGen didn't say), plus the b-roll scenes, minus the crossfade
+    overlaps (each fade runs over the end of the previous scene)."""
+    words = {key: len(str(text).split()) for key, _, text, _ in _lines(script)}
+    # The word-count fallback is deliberately SHORT (x0.85): too short and the ticker text
+    # ends a moment early; too long and JSON2Video stretches the whole video.
+    anchors = sum(clip_seconds(url) or 0.85 * words.get(key, 0) / WPS for key, url in clips.items())
+    broll = sum(sc.get("duration", 0) for sc in scenes)
+    overlap = DISSOLVE * (len(scenes) - 1) if DISSOLVE > 0 else 0
+    return max(1.0, anchors + broll - overlap)
+
+
 def build_coanchor_movie(script, show, clips, ticker_items, narration, _check=True):
     scenes, seen = [], set()
     narration_secs, n_images = 0.0, 0
-    tick = _Ticker(ticker_items)
+    tick = _Ticker(ticker_items) if TICKER == "flip" else None   # crawl: one movie-level ticker instead
 
     if "open_a" in clips:
         scenes.append(_anchor_scene(clips["open_a"],
@@ -442,10 +459,14 @@ def build_coanchor_movie(script, show, clips, ticker_items, narration, _check=Tr
         for sc in scenes[1:]:
             sc["transition"] = {"style": "fade", "duration": DISSOLVE}
 
+    ticker = []
+    if TICKER != "flip":
+        ticker = g.ticker_crawl(ticker_items, episode_seconds(script, clips, scenes))
+
     movie = {
         "resolution": "full-hd", "quality": "high",
         "scenes": scenes,
-        "elements": [g.bug(), g.live_bar(show["title"])]
+        "elements": [g.bug(), g.live_bar(show["title"])] + ticker
                     + ([{"type": "subtitles", "language": "auto", "settings": caption}] if CAPTIONS else []),
     }
     if _check:

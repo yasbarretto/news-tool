@@ -222,7 +222,22 @@ def _heygen_await(vid, label, abort=None, v3=False):
         lambda d: d.get("status") == "completed" and d.get("video_url"),
         lambda d: d.get("status") in ("failed", "error"),   # real failure
         HEYGEN_TIMEOUT, abort=abort)
+    try:
+        if d.get("duration"):
+            CLIP_SECS[d["video_url"]] = float(d["duration"])
+    except (TypeError, ValueError):
+        pass
     return d["video_url"]   # status calls return a FRESH presigned url, so resuming never serves an expired one
+
+
+# Clip length in seconds by video url, as HeyGen reports it on completion. The crawl ticker
+# needs the episode's exact length: movie-level graphics that run past the last scene
+# make JSON2Video stretch the whole video to fit them.
+CLIP_SECS = {}
+
+
+def clip_seconds(url):
+    return CLIP_SECS.get(url)
 
 
 def _heygen_request(text, avatar_id=None, voice_id=None, photo_id=None):
