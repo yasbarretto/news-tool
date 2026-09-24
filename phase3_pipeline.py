@@ -225,17 +225,16 @@ def _heygen_await(vid, label, abort=None, v3=False):
     return d["video_url"]   # status calls return a FRESH presigned url, so resuming never serves an expired one
 
 
-def heygen_avatar(text, avatar_id=None, voice_id=None, photo_id=None, label="heygen", abort=None,
-                  resume_vid=None, on_submit=None):
-    """Render one avatar clip.
-
-    resume_vid: a clip already submitted (and paid for) by an earlier attempt of this job.
-                We pick it back up instead of submitting a duplicate.
-    on_submit:  called with the new video id the moment it's submitted, so the job can
-                record it before waiting. With it, a slow clip is never resubmitted here;
-                the job requeues and resumes it instead.
-    """
+def _heygen_request(text, avatar_id=None, voice_id=None, photo_id=None):
+    """(url, payload, v3) for one clip. Photo avatars go to Avatar IV when HEYGEN_ENGINE says so."""
     v3 = bool(photo_id) and HEYGEN_ENGINE == "avatar_iv"
+    if v3:
+        payload = {"type": "avatar", "avatar_id": photo_id, "script": text,
+                   "voice_id": voice_id or VOICE_ID, "resolution": "1080p", "aspect_ratio": "16:9",
+                   "engine": {"type": "avatar_iv"}, "expressiveness": EXPRESSIVENESS}
+        if MOTION_PROMPT:
+            payload["motion_prompt"] = MOTION_PROMPT
+        return "https://api.heygen.com/v3/videos", payload, True
     # photo_id = a generated photo-avatar look (talking_photo); otherwise a stock avatar
     character = ({"type": "talking_photo", "talking_photo_id": photo_id} if photo_id else
                  {"type": "avatar", "avatar_id": avatar_id or AVATAR_ID, "avatar_style": "normal"})
@@ -246,15 +245,44 @@ def heygen_avatar(text, avatar_id=None, voice_id=None, photo_id=None, label="hey
     bg = _bg()
     if bg:
         scene["background"] = bg
-    payload = {"video_inputs": [scene], "aspect_ratio": "16:9", "test": TEST}
-    url = "https://api.heygen.com/v2/video/generate"
-    if v3:
-        url = "https://api.heygen.com/v3/videos"
-        payload = {"type": "avatar", "avatar_id": photo_id, "script": text,
-                   "voice_id": voice_id or VOICE_ID, "resolution": "1080p", "aspect_ratio": "16:9",
-                   "engine": {"type": "avatar_iv"}, "expressiveness": EXPRESSIVENESS}
-        if MOTION_PROMPT:
-            payload["motion_prompt"] = MOTION_PROMPT
+    return "https://api.heygen.com/v2/video/generate", {"video_inputs": [scene], "aspect_ratio": "16:9", "test": TEST}, False
+
+
+def _heygen_post(url, payload, v3):
+    resp = requests.post(url, headers=HH, json=payload, timeout=90 if v3 else NET)
+    body = resp.json()
+    if not body.get("data") or not body["data"].get("video_id"):
+        # RuntimeError, not SystemExit: the worker catches Exception, so one bad
+        # HeyGen response fails one job instead of killing the whole worker loop.
+        raise RuntimeError(f"[heygen error] HTTP {resp.status_code}: {json.dumps(body)[:600]}")
+    return body["data"]["video_id"]
+
+
+def heygen_submit(text, avatar_id=None, voice_id=None, photo_id=None, label="heygen"):
+    """Submit one clip WITHOUT waiting. Returns (video_id, v3) for heygen_await."""
+    url, payload, v3 = _heygen_request(text, avatar_id, voice_id, photo_id)
+    vid = _heygen_post(url, payload, v3)
+    print(f"  [{label}] submitted {vid}")
+    return vid, v3
+
+
+def heygen_await(vid, label="heygen", abort=None, v3=False):
+    """Wait for a submitted clip. Returns a fresh video url."""
+    return _heygen_await(vid, label, abort, v3)
+
+
+def heygen_avatar(text, avatar_id=None, voice_id=None, photo_id=None, label="heygen", abort=None,
+                  resume_vid=None, on_submit=None):
+    """Render one avatar clip (submit + wait). Co-anchored episodes use heygen_submit and
+    heygen_await directly so every clip is sent before any wait starts.
+
+    resume_vid: a clip already submitted (and paid for) by an earlier attempt of this job.
+                We pick it back up instead of submitting a duplicate.
+    on_submit:  called with the new video id the moment it's submitted, so the job can
+                record it before waiting. With it, a slow clip is never resubmitted here;
+                the job requeues and resumes it instead.
+    """
+    url, payload, v3 = _heygen_request(text, avatar_id, voice_id, photo_id)
 
     if resume_vid:
         print(f"  [{label}] resuming {resume_vid}")
@@ -269,13 +297,7 @@ def heygen_avatar(text, avatar_id=None, voice_id=None, photo_id=None, label="hey
     for attempt in range(1, attempts + 1):
         if abort is not None and abort.is_set():  # never submit (and pay) for a lost job
             raise Aborted(f"{label} not submitted: job already failed")
-        resp = requests.post(url, headers=HH, json=payload, timeout=90 if v3 else NET)
-        body = resp.json()
-        if not body.get("data") or not body["data"].get("video_id"):
-            # RuntimeError, not SystemExit: the worker catches Exception, so one bad
-            # HeyGen response fails one job instead of killing the whole worker loop.
-            raise RuntimeError(f"[heygen error] HTTP {resp.status_code}: {json.dumps(body)[:600]}")
-        vid = body["data"]["video_id"]
+        vid = _heygen_post(url, payload, v3)
         print(f"  [{label}] submitted {vid}" + (f" (attempt {attempt})" if attempt > 1 else ""))
         if on_submit:
             on_submit(vid)

@@ -25,7 +25,7 @@ from phase3_pipeline import (
 
 POLL_SECONDS = 15
 # A slow clip requeues the job (resuming its clips) up to this many times before failing.
-JOB_RETRIES = int(os.environ.get("JOB_RETRIES", "3"))
+JOB_RETRIES = int(os.environ.get("JOB_RETRIES", "5"))
 
 
 def process(job_id, num_stories):
