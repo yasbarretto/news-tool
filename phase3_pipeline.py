@@ -194,11 +194,31 @@ def wait_for(label, poll, is_done, is_failed, timeout, every=8, abort=None):
     raise WaitTimeout(f"{label} timed out after {timeout // 60} min (last status: {last})")
 
 
-def _heygen_await(vid, label, abort=None):
+# Photo-avatar engine. "off" = the v2 talking_photo animation, which grins whatever we send
+# (tested: expression, talking_style, voice emotion, a serious voice). "avatar_iv" = HeyGen's
+# v3 Avatar IV engine, which follows EXPRESSIVENESS and MOTION_PROMPT and stayed near-neutral
+# in testing. Avatar IV costs more per second. Stock (non-photo) avatars are unaffected.
+# ON by default: the calm photos in shows.py grin through the old engine. HEYGEN_ENGINE=off
+# goes back to the v2 animation.
+HEYGEN_ENGINE = os.environ.get("HEYGEN_ENGINE", "avatar_iv").strip().lower()
+EXPRESSIVENESS = os.environ.get("AVATAR_EXPRESSIVENESS", "low")          # low | medium | high
+MOTION_PROMPT = os.environ.get("AVATAR_MOTION_PROMPT", (
+    "Calm, composed TV news anchor reading a serious news story. Neutral, relaxed face "
+    "with lips closed between words. No smiling, no grinning. Minimal head movement, "
+    "steady eye contact with the camera."))
+
+
+def _v3_status(vid):
+    body = requests.get(f"https://api.heygen.com/v3/videos/{vid}", headers=HH, timeout=NET).json()
+    return body.get("data") or body
+
+
+def _heygen_await(vid, label, abort=None, v3=False):
     d = wait_for(
         label,
-        lambda: requests.get(f"https://api.heygen.com/v1/video_status.get?video_id={vid}",
-                             headers=HH, timeout=NET).json().get("data"),
+        (lambda: _v3_status(vid)) if v3 else
+        (lambda: requests.get(f"https://api.heygen.com/v1/video_status.get?video_id={vid}",
+                              headers=HH, timeout=NET).json().get("data")),
         lambda d: d.get("status") == "completed" and d.get("video_url"),
         lambda d: d.get("status") in ("failed", "error"),   # real failure
         HEYGEN_TIMEOUT, abort=abort)
@@ -215,6 +235,7 @@ def heygen_avatar(text, avatar_id=None, voice_id=None, photo_id=None, label="hey
                 record it before waiting. With it, a slow clip is never resubmitted here;
                 the job requeues and resumes it instead.
     """
+    v3 = bool(photo_id) and HEYGEN_ENGINE == "avatar_iv"
     # photo_id = a generated photo-avatar look (talking_photo); otherwise a stock avatar
     character = ({"type": "talking_photo", "talking_photo_id": photo_id} if photo_id else
                  {"type": "avatar", "avatar_id": avatar_id or AVATAR_ID, "avatar_style": "normal"})
@@ -226,11 +247,19 @@ def heygen_avatar(text, avatar_id=None, voice_id=None, photo_id=None, label="hey
     if bg:
         scene["background"] = bg
     payload = {"video_inputs": [scene], "aspect_ratio": "16:9", "test": TEST}
+    url = "https://api.heygen.com/v2/video/generate"
+    if v3:
+        url = "https://api.heygen.com/v3/videos"
+        payload = {"type": "avatar", "avatar_id": photo_id, "script": text,
+                   "voice_id": voice_id or VOICE_ID, "resolution": "1080p", "aspect_ratio": "16:9",
+                   "engine": {"type": "avatar_iv"}, "expressiveness": EXPRESSIVENESS}
+        if MOTION_PROMPT:
+            payload["motion_prompt"] = MOTION_PROMPT
 
     if resume_vid:
         print(f"  [{label}] resuming {resume_vid}")
         try:
-            return _heygen_await(resume_vid, label, abort)
+            return _heygen_await(resume_vid, label, abort, v3)
         except (WaitTimeout, Aborted):
             raise                                   # still running: the job requeues and resumes again
         except RuntimeError as e:
@@ -240,7 +269,7 @@ def heygen_avatar(text, avatar_id=None, voice_id=None, photo_id=None, label="hey
     for attempt in range(1, attempts + 1):
         if abort is not None and abort.is_set():  # never submit (and pay) for a lost job
             raise Aborted(f"{label} not submitted: job already failed")
-        resp = requests.post("https://api.heygen.com/v2/video/generate", headers=HH, json=payload, timeout=NET)
+        resp = requests.post(url, headers=HH, json=payload, timeout=90 if v3 else NET)
         body = resp.json()
         if not body.get("data") or not body["data"].get("video_id"):
             # RuntimeError, not SystemExit: the worker catches Exception, so one bad
@@ -251,7 +280,7 @@ def heygen_avatar(text, avatar_id=None, voice_id=None, photo_id=None, label="hey
         if on_submit:
             on_submit(vid)
         try:
-            return _heygen_await(vid, label, abort)
+            return _heygen_await(vid, label, abort, v3)
         except WaitTimeout as e:
             if attempt == attempts:
                 raise WaitTimeout(f"{e} · gave up after {attempt} attempt{'s' if attempt > 1 else ''}")

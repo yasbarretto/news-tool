@@ -120,11 +120,32 @@ SHOWS = {
 }
 
 
-# ORIGINAL generated photos (2752x1536, widescreen), as in version 8: the last version that
-# rendered full-width and sharp. Do NOT paste `looks` output (1024x608) here.
-# Photo-avatar looks from make_anchors.py, keyed by anchor name.
-# Any anchor listed renders as their generated photo avatar; the rest keep their stand-in.
+# CALM photos (from worker/calm_anchor.py): each anchor's composed look, trimmed to 16:9
+# and enlarged to 2752x1548, uploaded as its own photo avatar. Every one test-rendered at
+# 1920x1080 with no side bars. Rendered through Avatar IV (HEYGEN_ENGINE) they stay calm;
+# through the old v2 animation they grin like every other photo.
+# Do NOT paste raw `make_anchors.py looks` ids here: those are 1024x608 (side bars + blur).
 PHOTOS = {
+    "Alex Reynolds": "0d0dc242ff4548f9b59714063007e896",
+    "Emma Chen": "64963f837af6456087a9f5a76cfdc1a6",
+    "Victor Marshall": "334fdcaf45c24b26b32149bd7195cac5",
+    "Savannah Blake": "9d228b9dbb144dd083d8770c07839574",   # from new_look.py (her composed looks had lost her blonde hair)
+    "Chase Harrison": "d22ae20fe39e41dd81341715b10758c5",
+    "Natalie Vale": "8c6a9dd756ba4224a152c0d796b48f5b",
+    "Tyler Brooks": "2f7bec8438a941208897e3a4f5f7b7dc",
+    "Kimiko Tan": "ed472e69773445618017e65fa86b15bd",
+    "Jack Weston": "64b15a108ef748feb69465336ff7a77b",
+    "Taylor Brooks": "785713bd58b6485f91d0d3d838e4ca89",
+    "Daniel Park": "f62f20f806dc4606bf6ebf156cff0039",
+    "Madison Rivers": "746439b38ace4b318ac9dc37dae68a06",
+    "Marcus Bell": "9c166b7c68384f0a9c9687afb1605b39",
+    "Jordan Reese": "f3d3a8845061447e84cf6f74c7d77fb6",
+    "Ryan Carter": "bf72eecea2944b9e97833fd0d4d33d29",
+    "Sienna Monroe": "4e2ece3cb79544019fec48897fe6ec76",
+}
+
+# The version-8 original photos (sharp, widescreen, broad smile), kept for rollback.
+PHOTOS_ORIGINAL = {
     "Alex Reynolds": "77dcf7cdf53546ebbda279d4c6a8186a",
     "Emma Chen": "e750ee24c8f54212a42f9624a90981d1",
     "Victor Marshall": "2cce600e92d64e3e94cbf6da26e37b9c",
@@ -146,7 +167,7 @@ PHOTOS = {
 # Composed (not smiling) looks of the SAME anchors, from `make_anchors.py looks`.
 # Used for somber stories. Anchors without one fall back to their warm look.
 # Composed looks are 1024x608 (HeyGen pads and upscales them: side bars + blur), so they
-# are OFF. Somber stories use the original photo like everything else. To bring them back,
+# are OFF. Somber stories use the same calm photo as everything else. To bring them back,
 # restore the dict from worker_backup_before_revert/shows.py.
 PHOTOS_SERIOUS = {}
 

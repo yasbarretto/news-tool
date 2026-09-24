@@ -162,7 +162,9 @@ def public(script):
 
 def _sig(text, anc, photo=None):
     """Identity of a clip: same words, same face (and expression), same voice = same clip."""
-    raw = "|".join([str(text), str(anc.get("avatar")), str(photo), str(anc.get("voice"))])
+    from phase3_pipeline import HEYGEN_ENGINE   # a clip from another engine is a different clip
+    raw = "|".join([str(text), str(anc.get("avatar")), str(photo), str(anc.get("voice"))]
+                   + ([HEYGEN_ENGINE] if HEYGEN_ENGINE and photo else []))
     return hashlib.sha1(raw.encode()).hexdigest()[:16]
 
 

@@ -196,6 +196,9 @@ def maybe_enqueue(s):
 
 def main():
     print("News69 worker up. polling every", POLL_SECONDS, "s")
+    from phase3_pipeline import HEYGEN_ENGINE, EXPRESSIVENESS
+    print(f"[anchors] photo engine: {HEYGEN_ENGINE}" +
+          (f" (expressiveness {EXPRESSIVENESS}, calm motion prompt)" if HEYGEN_ENGINE == "avatar_iv" else " (old v2 animation)"))
     try:
         jobs, prev = db.recover_stuck()
         if jobs:
