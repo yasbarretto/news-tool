@@ -309,13 +309,41 @@ def heygen_avatar(text, avatar_id=None, voice_id=None, photo_id=None, label="hey
             print(f"  [{label}] stuck at HeyGen, resubmitting")
 
 
-def heygen_tts(text, voice_id=None):
-    r = requests.post("https://api.heygen.com/v3/voices/speech", headers=HH,
-                      json={"text": text, "voice_id": voice_id or VOICE_ID}, timeout=NET).json()
-    d = r.get("data", {})
-    if not d.get("audio_url"):
-        raise RuntimeError(r)
-    return d["audio_url"], d.get("duration", 5)
+class TTSUnavailable(RuntimeError):
+    """HeyGen TTS failed on THEIR side (internal error, 5xx, network) after retries.
+    Says nothing about the voice itself."""
+
+
+_TRANSIENT = ("internal_error", "service_unavailable", "timeout", "rate_limit", "too_many_requests")
+
+
+def heygen_tts(text, voice_id=None, tries=4):
+    """Narration audio. Retries HeyGen's own hiccups (e.g. internal_error, seen on a good
+    voice) with backoff; a real rejection of the request is raised straight away."""
+    last = None
+    for attempt in range(tries):
+        try:
+            resp = requests.post("https://api.heygen.com/v3/voices/speech", headers=HH,
+                                 json={"text": text, "voice_id": voice_id or VOICE_ID}, timeout=NET)
+            try:
+                r = resp.json()
+            except ValueError:
+                r = {"error": {"code": f"http_{resp.status_code}", "message": resp.text[:200]}}
+        except requests.RequestException as e:
+            r, resp = {"error": {"code": "network", "message": str(e)[:200]}}, None
+        d = r.get("data") or {}
+        if d.get("audio_url"):
+            return d["audio_url"], d.get("duration", 5)
+        code = str((r.get("error") or {}).get("code", "")).lower()
+        status = resp.status_code if resp is not None else 0
+        transient = code == "network" or status >= 500 or status == 429 or any(t in code for t in _TRANSIENT)
+        if not transient:
+            raise RuntimeError(r)                     # the request itself was refused
+        last = r
+        if attempt < tries - 1:
+            print(f"  [tts] HeyGen hiccup ({code or status}), retrying in {5 * (attempt + 1)}s")
+            time.sleep(5 * (attempt + 1))
+    raise TTSUnavailable(f"HeyGen text-to-speech kept failing on their side: {str(last)[:200]}")
 
 
 SAFE_PROMPT = "abstract futuristic technology background, glowing blue digital network, cinematic, no people, no text"

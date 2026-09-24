@@ -22,7 +22,7 @@ import anthropic
 
 import graphics as g
 from phase3_pipeline import (ANTHROPIC_API_KEY, heygen_submit, heygen_await, heygen_tts,
-                             Aborted, WaitTimeout, HEYGEN_ENGINE)
+                             Aborted, WaitTimeout, HEYGEN_ENGINE, TTSUnavailable)
 
 CONCURRENCY = int(os.environ.get("HEYGEN_CONCURRENCY", "3"))
 # A recorded clip older than this is presumed dead at HeyGen and submitted fresh.
@@ -44,10 +44,14 @@ _VOICE_OK = {}   # voice_id -> True/False, cached for the life of the worker
 
 
 def _voice_works(voice_id):
+    """True/False for a definite answer. A HeyGen outage (TTSUnavailable) is NOT a verdict
+    on the voice: it propagates, fails this job with an honest message, and isn't cached."""
     if voice_id not in _VOICE_OK:
         try:
             heygen_tts("Checking.", voice_id)
             _VOICE_OK[voice_id] = True
+        except TTSUnavailable:
+            raise
         except Exception as e:
             print(f"  [voices] {voice_id} failed narration TTS: {str(e)[:160]}")
             _VOICE_OK[voice_id] = False
@@ -56,7 +60,11 @@ def _voice_works(voice_id):
 
 def check_voices(show):
     """Fail fast, before any paid render, if an anchor's voice can't do narration TTS."""
-    bad = [f"{show[k]['name']} ({show[k]['voice']})" for k in ("a", "b") if not _voice_works(show[k]["voice"])]
+    try:
+        bad = [f"{show[k]['name']} ({show[k]['voice']})" for k in ("a", "b") if not _voice_works(show[k]["voice"])]
+    except TTSUnavailable as e:
+        raise RuntimeError(f"{show['title']}: HeyGen text-to-speech is having an outage (not a voice problem). "
+                           f"Nothing was spent; generate again in a few minutes. [{str(e)[:160]}]")
     if bad:
         raise RuntimeError(f"{show['title']}: voice not supported for narration TTS: {', '.join(bad)}. "
                            f"Pick a Starfish voice for this anchor in shows.py.")
