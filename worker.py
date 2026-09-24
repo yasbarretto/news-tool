@@ -31,8 +31,20 @@ JOB_RETRIES = int(os.environ.get("JOB_RETRIES", "5"))
 def process(job_id, num_stories):
     job = db.get_job(job_id)
     show = get_show(job.get("show_key"))
+    if not show and job.get("rework_of"):
+        # reworks created before the rework route copied show_key: take it from the original
+        key = db.show_key_of(job["rework_of"])
+        show = get_show(key)
+        if show:
+            db.update_job(job_id, show_key=key)
+            job["show_key"] = key
     if show:
         return process_show(job_id, job, show, num_stories)
+    if coanchor.is_coanchor(job.get("script")):
+        # a co-anchored script can't go through the single-anchor path (it has no intro/outro)
+        db.update_job(job_id, status="failed", stage="error",
+                      error="co-anchored script but no show on this job; set show_key and requeue")
+        return
     return process_single(job_id, job, num_stories)
 
 

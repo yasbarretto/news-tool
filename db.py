@@ -99,6 +99,13 @@ def get_job(vid):
             "rework_of": r[3], "rework_mode": r[4], "avatar_id": r[5], "voice_id": r[6], "show_key": r[7]}
 
 
+def show_key_of(vid):
+    """The show a video belongs to, or None."""
+    with get_conn() as c:
+        r = c.execute("SELECT show_key FROM public.news69_videos WHERE id=%s", (vid,)).fetchone()
+    return r[0] if r else None
+
+
 def save_script(vid, script):
     with get_conn() as c:
         c.execute("UPDATE public.news69_videos SET script=%s WHERE id=%s", (json.dumps(script), vid))
