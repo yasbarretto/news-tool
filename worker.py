@@ -78,7 +78,7 @@ def process_show(job_id, job, show, num_stories):
         coanchor.check_voices(show)   # before anything is spent
         headlines = []
         if job.get("script"):
-            script = coanchor.normalize(_rework_script(job, stage))
+            script = coanchor.normalize(_rework_script(job, stage), show)
         else:
             stage(f"ingesting news · {show['title']}", 10)
             headlines = ingest(feeds=show["feeds"])

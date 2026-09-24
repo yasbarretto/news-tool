@@ -14,7 +14,7 @@ Running order
 
 Stories alternate A, B, A... regardless of what the model returns.
 """
-import os, json
+import os, json, re
 import threading, hashlib, time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -63,11 +63,56 @@ def check_voices(show):
 
 
 # ------------------------------------------------------------------ script
+def day_part(show):
+    """(greeting word, 'today'/'tonight') for the show's slot. Slots are local airtimes
+    in shows.py: 07:00 and 09:00 are mornings, 12:00 and 15:00 afternoons, 17:00 on evenings."""
+    try:
+        hour = int(str(show.get("slot", "")).split(":")[0])
+    except ValueError:
+        return None, None
+    if 4 <= hour < 12:
+        return "morning", "today"
+    if 12 <= hour < 17:
+        return "afternoon", "today"
+    return "evening", "tonight"
+
+
+_GREETING = re.compile(r"\b(good)(\s+)(morning|afternoon|evening)\b", re.I)
+
+
+def fix_greetings(script, show):
+    """Safety net: any 'Good morning/afternoon/evening' in a spoken line matches the slot.
+    'Good night' (a sign-off) is left alone."""
+    part, _ = day_part(show)
+    if not part:
+        return script
+
+    def fix(text):
+        if not isinstance(text, str):
+            return text
+        def same_case(word):
+            if word.isupper():
+                return part.upper()
+            return part.capitalize() if word[0].isupper() else part
+        return _GREETING.sub(lambda m: m.group(1) + m.group(2) + same_case(m.group(3)), text)
+
+    for side in ("open", "close"):
+        for k in ("a", "b"):
+            if isinstance(script.get(side), dict):
+                script[side][k] = fix(script[side].get(k))
+    for st in script.get("stories", []):
+        for k in ("lead", "narration"):
+            st[k] = fix(st.get(k))
+    return script
+
+
 def make_coanchor_script(headlines, show, n, covered=None):
     a, b = show["a"]["name"], show["b"]["name"]
+    part, when = day_part(show)
     fa, fb = a.split()[0], b.split()[0]
     prompt = f"""You are the producer of "{show['title']}" on News Channel 69, a short news show covering {show['topic']}.
 It is co-anchored by {a} (anchor A, opens the show) and {b} (anchor B). Write the episode as dialogue.
+The show airs at {show.get('slot', '')} local time, in the {part or 'day'}.
 
 Today's candidate headlines:
 {json.dumps(headlines, indent=2)}
@@ -105,17 +150,18 @@ Rules:
 - Spell company and product names exactly as the company does ("OpenAI" the company is not "open AI").
 - Spell out numbers and tickers as spoken ("a hundred and thirty-five dollars").
 - Broadcast tone: confident, warm, tight. No filler.
+- Time of day: this is a {part or 'daytime'} show. Any greeting is "Good {part or 'day'}", and any reference to the broadcast itself says "{when or 'today'}" (e.g. "here's what we're following {when or 'today'}"). Never greet with a different time of day, and never say "tonight" in a morning or afternoon show.
 - A somber story is read plainly and respectfully. No wordplay, no upbeat phrasing, and the anchor does not thank or hand off cheerfully around it."""
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
     msg = client.messages.create(model="claude-sonnet-4-6", max_tokens=3000,
                                  messages=[{"role": "user", "content": prompt}])
     text = "".join(x.text for x in msg.content if x.type == "text")
     script = json.loads(text[text.find("{"):text.rfind("}") + 1])
-    return normalize(script)
+    return normalize(script, show)
 
 
-def normalize(script):
-    """Enforce the running order the render relies on."""
+def normalize(script, show=None):
+    """Enforce the running order the render relies on (and, given the show, the greeting)."""
     for i, st in enumerate(script.get("stories", [])):
         st["anchor"] = "a" if i % 2 == 0 else "b"
         st.setdefault("category", "News")
@@ -126,6 +172,8 @@ def normalize(script):
     script.setdefault("close", {}).setdefault("a", "")
     script["close"].setdefault("b", "")
     script["format"] = "coanchor"
+    if show:
+        fix_greetings(script, show)
     return script
 
 
