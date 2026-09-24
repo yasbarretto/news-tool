@@ -36,6 +36,16 @@ WPS = 2.5  # spoken words per second, for estimates
 # "crawl" = continuous scrolling ticker across the whole episode (graphics.ticker_crawl);
 # "flip" = the old one-headline-at-a-time fade, per scene.
 TICKER = os.environ.get("TICKER", "crawl").strip().lower()
+# "rundown" = network-rundown layout tested in format_test.py: full-screen open card, a date
+# strip under the headline bar, a location tag on b-roll, headline bars on anchor lead-ins.
+# "classic" = the previous layout.
+SHOW_FORMAT = os.environ.get("SHOW_FORMAT", "rundown").strip().lower()
+OPEN_CARD_SECS = 3.0
+# Both tested in board_box_test.py. STORY_BOX: anchor lead-ins (after an anchor's first
+# appearance) show the anchor moved left with the story's image in a framed box.
+# DATA_BOARD: a full-screen figures board in the b-roll of stories whose source states numbers.
+STORY_BOX = os.environ.get("STORY_BOX", "on").strip().lower() in ("1", "true", "on", "yes")
+DATA_BOARD = os.environ.get("DATA_BOARD", "on").strip().lower() in ("1", "true", "on", "yes")
 ANCHOR_ZOOM = float(os.environ.get("ANCHOR_ZOOM", "1.0"))  # 1.08 crops HeyGen side bars if they show; 1.0 = off
 
 
@@ -117,6 +127,51 @@ def fix_greetings(script, show):
     return script
 
 
+_NUM = re.compile(r"\d[\d,]*(?:\.\d+)?")
+
+
+def _numbers(text):
+    """Every number in text, commas removed ('1,200' -> '1200')."""
+    return {m.replace(",", "") for m in _NUM.findall(str(text or ""))}
+
+
+def _plain(text):
+    """Source text without markup: Google News summaries are HTML with links, and digits in a
+    URL must never count as a figure the story states."""
+    import html as _html
+    return _html.unescape(re.sub(r"<[^>]+>", " ", str(text or "")))
+
+
+def validate_figures(script, headlines):
+    """Keep a story's data board only if EVERY figure on it appears in that story's own source
+    headline or summary. Anything unverifiable is dropped: a made-up number on a full-screen
+    graphic is worse than no graphic. Returns the stories whose board was dropped."""
+    by_link = {h.get("link"): h for h in headlines or [] if h.get("link")}
+    by_title = {h.get("title"): h for h in headlines or [] if h.get("title")}
+    dropped = []
+    for i, st in enumerate(script.get("stories", [])):
+        fig = st.get("figures")
+        if not fig:
+            st.pop("figures", None)
+            continue
+        src = by_link.get(st.get("source_link")) or by_title.get(st.get("source_title"))
+        ok = isinstance(fig, dict) and isinstance(fig.get("rows"), list) and 2 <= len(fig["rows"]) <= 4 and src
+        if ok:
+            have = _numbers(_plain(src.get("title")) + " " + _plain(src.get("summary")))
+            for row in fig["rows"]:
+                if not (isinstance(row, (list, tuple)) and len(row) == 2):
+                    ok = False
+                    break
+                want = _numbers(row[1])
+                if not want or not want <= have:          # every number in the figure must be in the source
+                    ok = False
+                    break
+        if not ok:
+            st.pop("figures", None)
+            dropped.append(i)
+    return dropped
+
+
 def make_coanchor_script(headlines, show, n, covered=None):
     a, b = show["a"]["name"], show["b"]["name"]
     part, when = day_part(show)
@@ -141,10 +196,12 @@ Return ONLY valid JSON (no markdown) in exactly this shape:
       "category": "<ONE word desk label, e.g. TECH, MARKETS, WORLD, SPORTS, POLITICS>",
       "tone": "<somber if the story involves death, tragedy, disaster, violence, serious illness or loss; otherwise neutral>",
       "headline": "<chyron: 3 to 5 words, under 28 characters>",
+      "location": "<where the story happens, 1 to 3 words, e.g. Washington, D.C. / Wall Street / Tokyo; Nationwide if nowhere specific>",
       "lead": "<the anchor ON CAMERA introducing the story: ONE sentence>",
       "narration": "<voiceover over b-roll: 1 to 3 sentences with the facts>",
       "source_title": "<EXACT headline from the candidate list>",
       "source_link": "<that item's link, copied exactly>",
+      "figures": "<OPTIONAL. Include ONLY if that item's headline or summary states 2 to 4 comparable figures, written exactly as there: {{\"title\": \"<what they measure, max 5 words>\", \"subtitle\": \"<optional qualifier, max 3 words>\", \"rows\": [[\"<label>\", \"<figure>\"], ...], \"source\": \"<publisher>\"}}. Otherwise leave this key out entirely.>",
       "broll_prompts": ["<photorealistic editorial news image>", "..."]
     }}
   ],
@@ -160,6 +217,7 @@ Rules:
 - broll_prompts: one per roughly 4 to 5 seconds of narration. Each must depict THIS story's actual subject. Anonymous people are fine. NO real named people, NO logos or readable text, NO violent or politically charged scenes.
 - Spell company and product names exactly as the company does ("OpenAI" the company is not "open AI").
 - Spell out numbers and tickers as spoken ("a hundred and thirty-five dollars").
+- figures (on-screen board): only numbers that appear in the candidate item's own headline or summary. Never estimate, round, convert, combine or invent a figure. When in doubt, leave figures out; most stories have none.
 - Broadcast tone: confident, warm, tight. No filler.
 - Time of day: this is a {part or 'daytime'} show. Any greeting is "Good {part or 'day'}", and any reference to the broadcast itself says "{when or 'today'}" (e.g. "here's what we're following {when or 'today'}"). Never greet with a different time of day, and never say "tonight" in a morning or afternoon show.
 - A somber story is read plainly and respectfully. No wordplay, no upbeat phrasing, and the anchor does not thank or hand off cheerfully around it."""
@@ -168,7 +226,10 @@ Rules:
                                  messages=[{"role": "user", "content": prompt}])
     text = "".join(x.text for x in msg.content if x.type == "text")
     script = json.loads(text[text.find("{"):text.rfind("}") + 1])
-    return normalize(script, show)
+    script = normalize(script, show)
+    for i in validate_figures(script, headlines):
+        print(f"  [figures] story {i + 1}: board dropped (figures not found in its source)")
+    return script
 
 
 def normalize(script, show=None):
@@ -377,7 +438,7 @@ def voice_narration(script, show):
     return [heygen_tts(st["narration"], show[st["anchor"]]["voice"]) for st in script["stories"]]
 
 
-def _broll_scene(story, narration, tick=None):
+def _broll_scene(story, narration, tick=None, date=None):
     LEAD, TAIL = 0.4, 0.5
     audio_url, dur = narration
     prompts = story.get("broll_prompts") or [story.get("headline", "news")]
@@ -388,6 +449,18 @@ def _broll_scene(story, narration, tick=None):
             "start": round(i * seg, 2), "duration": round(seg + 0.35, 2)} for i, p in enumerate(prompts)]
     els.append({"type": "audio", "src": audio_url, "start": LEAD})
     els.append(g.chyron(story.get("category"), story.get("headline")))
+    fig = story.get("figures") if DATA_BOARD else None
+    board_at = round(max(2.0, scene_dur * 0.35), 2) if fig and scene_dur >= 6 else None
+    if board_at is not None:                        # figures board for the rest of the scene
+        els.append(g.data_board(fig.get("title", ""), fig["rows"], fig.get("subtitle", ""),
+                                fig.get("source", ""), start=board_at, duration=round(scene_dur - board_at, 2)))
+    if date:                                        # rundown format
+        els.append(g.date_strip(date))
+        if story.get("location"):
+            loc = g.locator(story["location"], date.split(",")[0])
+            if board_at is not None:
+                loc["duration"] = board_at          # the board says what it's about; tag hides for it
+            els.append(loc)
     if tick:
         els += tick.for_scene(scene_dur)
     return {"duration": scene_dur, "elements": els}, dur, n
@@ -420,10 +493,20 @@ def build_coanchor_movie(script, show, clips, ticker_items, narration, _check=Tr
     scenes, seen = [], set()
     narration_secs, n_images = 0.0, 0
     tick = _Ticker(ticker_items) if TICKER == "flip" else None   # crawl: one movie-level ticker instead
+    rundown = SHOW_FORMAT != "classic"
+    date = g.air_date() if rundown else None
 
+    if rundown:
+        # full-screen open card; logo, LIVE bar and ticker start after it (see below)
+        scenes.append({"comment": "open card", "duration": OPEN_CARD_SECS,
+                       "elements": [g.open_card(show["title"], date)]})
     if "open_a" in clips:
-        scenes.append(_anchor_scene(clips["open_a"],
-                                    [g.title_card(show["title"], show["a"]["name"], show["b"]["name"])], tick))
+        if rundown:                                 # the card already showed the title: name the anchor
+            scenes.append(_anchor_scene(clips["open_a"], [g.lower_third(show["a"]["name"])], tick))
+            seen.add("a")
+        else:
+            scenes.append(_anchor_scene(clips["open_a"],
+                                        [g.title_card(show["title"], show["a"]["name"], show["b"]["name"])], tick))
     if "open_b" in clips:
         scenes.append(_anchor_scene(clips["open_b"], [g.lower_third(show["b"]["name"])], tick))
         seen.add("b")
@@ -432,10 +515,23 @@ def build_coanchor_movie(script, show, clips, ticker_items, narration, _check=Tr
         who = st["anchor"]
         key = f"lead_{i}"
         if key in clips:
-            ov = [] if who in seen else [g.lower_third(show[who]["name"])]
+            if who not in seen:
+                ov = [g.lower_third(show[who]["name"])]
+            elif rundown:                           # anchor introducing the story: its headline bar
+                ov = [g.chyron(st.get("category"), st.get("headline")), g.date_strip(date)]
+            else:
+                ov = []
+            prompts = st.get("broll_prompts") or []
+            if rundown and STORY_BOX and who in seen and prompts:
+                # anchor moved left, the story's image in a framed box on the wall
+                box = g.story_box({"model": "flux-pro", "prompt": prompts[0]}, st.get("category"))
+                scenes.append({"elements": [g.anchor_left(clips[key])] + box + ov
+                               + (tick.for_scene() if tick else [])})
+                n_images += 1
+            else:
+                scenes.append(_anchor_scene(clips[key], ov, tick))
             seen.add(who)
-            scenes.append(_anchor_scene(clips[key], ov, tick))
-        sc, dur, n = _broll_scene(st, narration[i], tick)
+        sc, dur, n = _broll_scene(st, narration[i], tick, date)
         scenes.append(sc)
         narration_secs += dur
         n_images += n
@@ -459,14 +555,26 @@ def build_coanchor_movie(script, show, clips, ticker_items, narration, _check=Tr
         for sc in scenes[1:]:
             sc["transition"] = {"style": "fade", "duration": DISSOLVE}
 
+    total = episode_seconds(script, clips, scenes)
+    # after the open card (its crossfade into the first anchor overlaps it)
+    after_open = max(0.0, OPEN_CARD_SECS - (DISSOLVE if DISSOLVE > 0 else 0)) if rundown else 0.0
+
+    def later(el):
+        """Movie-level graphic that starts after the open card and never runs past the end
+        (anything past the end makes JSON2Video stretch the video)."""
+        if after_open:
+            el["start"], el["duration"] = round(after_open, 3), round(total - after_open, 3)
+            el["fade-in"] = DISSOLVE or 0.3
+        return el
+
     ticker = []
     if TICKER != "flip":
-        ticker = g.ticker_crawl(ticker_items, episode_seconds(script, clips, scenes))
+        ticker = g.ticker_crawl(ticker_items, total, start=after_open)
 
     movie = {
         "resolution": "full-hd", "quality": "high",
         "scenes": scenes,
-        "elements": [g.bug(), g.live_bar(show["title"])] + ticker
+        "elements": [later(g.bug()), later(g.live_bar(show["title"]))] + ticker
                     + ([{"type": "subtitles", "language": "auto", "settings": caption}] if CAPTIONS else []),
     }
     if _check:

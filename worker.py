@@ -101,6 +101,9 @@ def process_show(job_id, job, show, num_stories):
             script = coanchor.make_coanchor_script(headlines, show, num_stories, db.recent_headlines())
             script["_headlines"] = headlines          # a requeued attempt still has them (ticker, QA)
         headlines = headlines or script.get("_headlines", [])
+        # every board figure must be in its story's source, also after a rework edited the script
+        for i in coanchor.validate_figures(script, headlines):
+            print(f"[job {job_id}] story {i + 1}: data board dropped (figures not found in its source)")
         db.save_script(job_id, script)
         ticker_items = [h["title"] for h in headlines] or [s["headline"] for s in script["stories"]]
         coanchor.preflight_movie(script, show, ticker_items)   # validate the payload before spending

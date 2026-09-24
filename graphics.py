@@ -142,12 +142,13 @@ def _text_px(text):
     return w
 
 
-def ticker_crawl(headlines, total_secs, speed=None, label="69 Now"):
+def ticker_crawl(headlines, total_secs, speed=None, label="69 Now", start=0.0):
     """Movie-level crawl ticker for a whole episode: band, moving copies of the headline
     loop, and the label on top so text slides out from behind it.
 
     total_secs must be the episode's real length: nothing here may end after it, or
-    JSON2Video stretches the video to fit (a 75s test came out 150s long)."""
+    JSON2Video stretches the video to fit (a 75s test came out 150s long).
+    start: seconds before the ticker appears (e.g. after a full-screen open card)."""
     speed = speed or CRAWL_SPEED
     items = [esc(clean_headline(h).upper()) for h in headlines if h] or ["NEWS CHANNEL 69"]
     diamond = (f'<i style="width:11px;height:11px;background:{RED};transform:rotate(45deg);'
@@ -160,12 +161,17 @@ def ticker_crawl(headlines, total_secs, speed=None, label="69 Now"):
     loop_w = int((sum(_text_px(clean_headline(h)) for h in headlines if h) + _SEP * len(items)) * 1.01) or 1000
     travel = 1920 - (_CRAWL_LEFT - loop_w)                      # enter at the right edge, exit behind the label
     per_copy = loop_w / speed                                   # a new copy enters every per_copy seconds
-    els = [ticker_band(label=None)]
+    def from_start(el):                  # band and label: from `start` to the end, never past it
+        if start:
+            el["start"], el["duration"] = round(start, 3), round(total_secs - start, 3)
+        return el
+
+    els = [from_start(ticker_band(label=None))]
     k = 0
-    while k * per_copy < total_secs - 0.05:
-        start = round(k * per_copy, 3)
-        dur = round(min(travel / speed, total_secs - start), 3)      # the last copy stops at the end
-        el = _el(body, loop_w, _CRAWL_H, 1920, _CRAWL_Y, duration=dur, start=start, z=31)
+    while start + k * per_copy < total_secs - 0.05:
+        t0 = round(start + k * per_copy, 3)
+        dur = round(min(travel / speed, total_secs - t0), 3)         # the last copy stops at the end
+        el = _el(body, loop_w, _CRAWL_H, 1920, _CRAWL_Y, duration=dur, start=t0, z=31)
         el["keyframes"] = [{"time": 0, "x": 1920},
                            {"time": dur, "x": round(1920 - speed * dur, 1), "easing": "linear"}]
         els.append(el)
@@ -173,7 +179,7 @@ def ticker_crawl(headlines, total_secs, speed=None, label="69 Now"):
     tag = (f'<span style="position:absolute;left:0;top:0;bottom:0;display:flex;align-items:center;'
            f'background:{RED};color:{WHITE};font:900 italic 33px/1 {FONT};padding:0 25px;'
            f'text-transform:uppercase">{esc(label)}</span>')
-    els.append(_el(tag, _CRAWL_LEFT, _CRAWL_H, 0, _CRAWL_Y, z=32))
+    els.append(from_start(_el(tag, _CRAWL_LEFT, _CRAWL_H, 0, _CRAWL_Y, z=32)))
     return els
 
 
@@ -228,6 +234,126 @@ def chyron(category, headline):
         f'display:flex;align-items:center;text-transform:uppercase;flex:1">{esc(headline)}</span></div>'
     )
     return _el(body, 1804, 92, 58, 836, duration=-2, fade=0.3, z=15)
+
+
+# ---------------------------------------------------------------- broadcast format (in test)
+# Modelled on the FORMAT of a network rundown (open card, dated headline bar, location tag),
+# drawn in News Channel 69's own style. Not wired into episodes yet: see format_test.py.
+def air_date(tz=None):
+    """'WEDNESDAY, SEPTEMBER 24' in the channel's time zone (SHOW_TZ)."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    now = datetime.now(ZoneInfo(tz or os.environ.get("SHOW_TZ", "America/New_York")))
+    return now.strftime("%A, %B ") + str(now.day)
+
+
+def open_card(show_title, date_text, duration=3.0):
+    """Full-screen show open: channel name, show title, air date. Its own scene, before the
+    first anchor; the movie-level graphics start after it."""
+    body = (
+        f'<div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;'
+        f'justify-content:center;gap:26px;background:radial-gradient(ellipse at 50% 42%,#15306E 0%,{NAVY} 45%,{DEEP} 100%)">'
+        f'<span style="color:{SILVER};font:700 34px/1 {FONT};letter-spacing:10px;text-transform:uppercase">'
+        f'News Channel <b style="color:{WHITE}">69</b></span>'
+        f'<span style="background:{RED};color:{WHITE};font:900 italic 150px/1 {FONT};padding:18px 70px 22px;'
+        f'text-transform:uppercase;clip-path:polygon(3% 0,100% 0,97% 100%,0 100%)">{esc(show_title)}</span>'
+        f'<span style="color:{WHITE};font:700 46px/1 {FONT};letter-spacing:4px;text-transform:uppercase;'
+        f'border-top:4px solid {RED};padding-top:18px">{esc(date_text)}</span></div>'
+    )
+    return _el(body, 1920, 1080, 0, 0, duration=duration, z=5)
+
+
+def date_strip(date_text):
+    """Thin dated strip under the story headline bar."""
+    body = (f'<span style="position:absolute;left:0;top:0;bottom:0;display:flex;align-items:center;'
+            f'background:{RED};color:{WHITE};font:700 24px/1 {FONT};letter-spacing:2px;padding:0 22px;'
+            f'text-transform:uppercase">{esc(date_text)}</span>')
+    return _el(body, 1200, 38, 58, 928, duration=-2, fade=0.3, z=15)
+
+
+def locator(place, sub=""):
+    """Where the story is: place on top, a smaller line (day, source) under it. Top-left,
+    below the LIVE bar, over b-roll only."""
+    subline = (f'<span style="background:{RED};color:{WHITE};font:700 22px/1 {FONT};letter-spacing:1.5px;'
+               f'padding:6px 16px;text-transform:uppercase;width:max-content">{esc(sub)}</span>') if sub else ""
+    body = (f'<div style="display:flex;flex-direction:column">'
+            f'<span style="background:{WHITE};color:{NAVY};font:800 34px/1 {FONT};padding:9px 16px 7px;'
+            f'text-transform:uppercase;width:max-content;border-left:8px solid {RED}">{esc(place)}</span>'
+            f'{subline}</div>')
+    return _el(body, 900, 90, 58, 122, duration=-2, fade=0.3, z=15)
+
+
+# ---------------------------------------------------------------- data board + story box (in test)
+# Not wired into episodes yet: see board_box_test.py.
+def data_board(title, rows, subtitle="", source="", start=0, duration=-2):
+    """Full-screen figures board, e.g. prices today / week ago / month ago / year ago.
+    rows: 2 to 4 (label, value) pairs. Sits under the headline bar and date strip (z 12)."""
+    rows = [(str(a), str(b)) for a, b in rows][:4]
+    size = {2: 130, 3: 100, 4: 84}.get(len(rows), 84)
+    items = "".join(
+        f'<div style="display:flex;align-items:center;justify-content:space-between;padding:10px 0;'
+        f'border-bottom:2px solid rgba(201,209,222,.25)">'
+        f'<span style="color:{SILVER};font:700 {int(size * .52)}px/1 {FONT};letter-spacing:2px;text-transform:uppercase">{esc(a)}</span>'
+        f'<span style="color:{WHITE};font:800 {size}px/1 {FONT};font-variant-numeric:tabular-nums">{esc(b)}</span></div>'
+        for a, b in rows)
+    sub = (f'<div style="color:{WHITE};background:{RED};font:700 30px/1 {FONT};letter-spacing:3px;padding:9px 20px;'
+           f'text-transform:uppercase;width:max-content;margin-top:10px">{esc(subtitle)}</div>') if subtitle else ""
+    src = (f'<div style="color:{SILVER};font:600 24px/1 {FONT};letter-spacing:2px;text-transform:uppercase;'
+           f'margin-top:16px;opacity:.8">Source: {esc(source)}</div>') if source else ""
+    body = (
+        f'<div style="position:absolute;inset:0;background:linear-gradient(160deg,#15306E 0%,{NAVY} 45%,{DEEP} 100%)">'
+        # content starts at y 200: clear of the LIVE bar (y 44-104) and the location zone
+        f'<div style="position:absolute;left:300px;right:300px;top:200px">'
+        f'<div style="color:{WHITE};font:900 italic 68px/1 {FONT};text-transform:uppercase;border-left:14px solid {RED};'
+        f'padding-left:24px">{esc(title)}</div>{sub}'
+        f'<div style="margin-top:22px">{items}</div>{src}</div></div>'
+    )
+    el = _el(body, 1920, 1080, 0, 0, duration=duration, start=start, z=12)
+    el["fade-in"] = 0.4
+    return el
+
+
+# Story box layout: the anchor clip slides left so the anchor sits at about a third of the
+# frame; a navy wall fades in from the right over the clip's edge; the story image sits in
+# a framed box on the wall.
+BOX_SHIFT = 380                                  # px the anchor clip moves left
+BOX = (1010, 150, 820, 462)                      # x, y, w, h of the story image (16:9)
+
+
+def anchor_left(url):
+    """The anchor clip, moved left for the story-box layout."""
+    return {"type": "video", "src": url, "resize": "cover", "position": "custom",
+            "x": -BOX_SHIFT, "y": 0, "width": 1920, "height": 1080}
+
+
+def story_box(image, category="", duration=-2):
+    """Wall + framed story image + category tag. image: a JSON2Video image source dict,
+    e.g. {"model": "flux-pro", "prompt": ...} or {"src": url}."""
+    x, y, w, h = BOX
+    # The wall is a MASK: navy everywhere right of the anchor except a window exactly where
+    # the box is, so nothing of the image can show outside the frame. The wall's left edge
+    # fades in over the moved clip's right edge.
+    left = x - 160                                   # wall starts here (the fade runs 160px)
+    wx = x - left                                    # window position inside the wall element
+    ww = 1920 - left
+    hole = (f"M0 0 H{ww} V1080 H0 Z "
+            f"M{wx} {y} V{y + h} H{wx + w} V{y} Z")  # evenodd: the second rectangle is cut out
+    wall = _el(f'<div style="position:absolute;inset:0;clip-path:path(evenodd,\'{hole}\');'
+               f'background:linear-gradient(90deg,rgba(6,18,51,0) 0px,rgba(6,18,51,.9) 150px,{DEEP} 420px)"></div>',
+               ww, 1080, left, 0, duration=duration, z=5)
+    # No "resize": with resize set, JSON2Video ignores width/height (per its docs), which is
+    # why the first test showed only the image's top-left corner. Width fixed, height -1
+    # (keep the image's own shape); the wall's window trims anything not exactly 16:9.
+    pic = {"type": "image", "position": "custom", "x": x, "y": y, "width": w, "height": -1,
+           "duration": duration, "z-index": 4, **image}
+    # frame element: 50px of headroom above the box for the category tag, then the border
+    tag = (f'<span style="position:absolute;left:0;top:0;height:50px;display:flex;align-items:center;'
+           f'background:{RED};color:{WHITE};font:900 italic 30px/1 {FONT};padding:0 18px;'
+           f'text-transform:uppercase">{esc(category)}</span>') if category else ""
+    border = (f'<div style="position:absolute;left:0;right:0;top:50px;bottom:0;border:6px solid {WHITE};'
+              f'box-shadow:0 14px 40px rgba(0,0,0,.5)"></div>')
+    frame = _el(border + tag, w + 12, h + 12 + 50, x - 6, y - 6 - 50, duration=duration, z=6)
+    return [wall, pic, frame]
 
 
 def sign_off(tagline, subline="AI-generated presenters"):
